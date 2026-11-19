@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+:root {
+  --studio-bg: #0c0e13;
+  --studio-sidebar: #10131a;
+  --studio-panel: #141821;
+  --studio-elevated: #1a1f2b;
+  --studio-border: rgba(255, 255, 255, 0.08);
+  --studio-ink: #f8fafc;
+  --studio-muted: #94a3b8;
+  --studio-dim: #64748b;
+
+  --font-ui: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: "Clash Display", "Plus Jakarta Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--studio-bg);
+  color: var(--studio-ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.font-mono-tech {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.studio-panel {
+  background-color: var(--studio-panel);
+  border: 1px solid var(--studio-border);
+  border-radius: 16px;
+}

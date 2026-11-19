@@ -1,0 +1,43 @@
+# Python environments & caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend build & dependencies (rebuilt by setup.sh / setup.ps1)
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+.npm/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime user data, browser sessions & secrets (NEVER commit personal data)
+browser_profiles/
+data/
+exports/
+logs/
+database/*.db
+database/*.db-wal
+database/*.db-shm
+database/*.sqlite*
+.env
+.env.*
+
+# OS, IDE & local agent tooling
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+.agents/
+.taste-skill/
+skills-lock.json
