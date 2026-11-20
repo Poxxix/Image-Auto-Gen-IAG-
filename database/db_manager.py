@@ -14,6 +14,7 @@ from config import (
     DEFAULT_SETTINGS,
     EXPORTS_DIR,
     SENSITIVE_SETTING_KEYS,
+    normalize_export_image_format,
 )
 
 
@@ -53,6 +54,7 @@ SCHEMA: Dict[str, str] = {
             aspect_ratio TEXT DEFAULT '1:1',
             metadata_language TEXT DEFAULT 'English',
             metadata_export_mode TEXT DEFAULT 'json',
+            export_image_format TEXT DEFAULT 'original',
             caption_prompt TEXT DEFAULT '',
             use_ai_caption_prompt INTEGER DEFAULT 1,
             optimize_prompt_english INTEGER DEFAULT 1,
@@ -733,6 +735,9 @@ class DatabaseManager:
         data["cycle_references"] = bool(data.get("cycle_references"))
         data["optimize_prompt_english"] = bool(data.get("optimize_prompt_english"))
         data["metadata_export_mode"] = data.get("metadata_export_mode") or "json"
+        data["export_image_format"] = normalize_export_image_format(
+            data.get("export_image_format")
+        )
         data["caption_prompt"] = data.get("caption_prompt") or ""
         data["use_ai_caption_prompt"] = bool(
             data.get("use_ai_caption_prompt")
@@ -801,6 +806,7 @@ class DatabaseManager:
         aspect_ratio: str = "1:1",
         metadata_language: str = "English",
         metadata_export_mode: str = "json",
+        export_image_format: str = "original",
         caption_prompt: str = "",
         use_ai_caption_prompt: bool = True,
         optimize_prompt_english: bool = True,
@@ -821,6 +827,7 @@ class DatabaseManager:
         clean_mode = (metadata_export_mode or "json").strip().lower()
         if clean_mode not in ("json", "caption", "none"):
             clean_mode = "json"
+        clean_image_format = normalize_export_image_format(export_image_format)
 
         now = now_iso()
         with self._conn() as conn:
@@ -830,11 +837,12 @@ class DatabaseManager:
                     theme, slug, base_prompt, reference_mode, run_mode,
                     target_count, batch_size, session_cap, cycle_references,
                     aspect_ratio, metadata_language, metadata_export_mode,
+                    export_image_format,
                     caption_prompt, use_ai_caption_prompt, optimize_prompt_english,
                     model, export_dir, preset_id, fixed_elements_json,
                     variation_axes_json, reference_ids_json, status,
                     current_step, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_theme,
@@ -849,6 +857,7 @@ class DatabaseManager:
                     aspect_ratio,
                     metadata_language,
                     clean_mode,
+                    clean_image_format,
                     (caption_prompt or DEFAULT_CAPTION_PROMPT).strip(),
                     1 if use_ai_caption_prompt else 0,
                     1 if optimize_prompt_english else 0,
@@ -995,6 +1004,7 @@ class DatabaseManager:
             "aspect_ratio",
             "metadata_language",
             "metadata_export_mode",
+            "export_image_format",
             "caption_prompt",
             "model",
             "export_dir",
@@ -1007,6 +1017,10 @@ class DatabaseManager:
         for key in allowed_scalar:
             if key in fields and fields[key] is not None:
                 updates[key] = fields[key]
+        if "export_image_format" in updates:
+            updates["export_image_format"] = normalize_export_image_format(
+                updates["export_image_format"]
+            )
         if "cycle_references" in fields and fields["cycle_references"] is not None:
             updates["cycle_references"] = 1 if fields["cycle_references"] else 0
         if "use_ai_caption_prompt" in fields and fields["use_ai_caption_prompt"] is not None:

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from PIL import Image
 
+from config import normalize_export_image_format
 from database.db_manager import db, now_iso
 from modules.reference_sources.image_utils import inspect_image_bytes
 
@@ -85,7 +86,7 @@ def save_generated_image_atomically(
         and precomputed_info.get("md5")
         else inspect_image_bytes(raw_bytes)
     )
-    target_fmt = (preferred_format or "original").lower().strip()
+    target_fmt = normalize_export_image_format(preferred_format)
 
     if target_fmt in ("original", "", orig_info["ext"]):
         final_bytes = raw_bytes
@@ -95,7 +96,7 @@ def save_generated_image_atomically(
         with Image.open(BytesIO(raw_bytes)) as im:
             exif_bytes = im.info.get("exif")
             out_buf = BytesIO()
-            if target_fmt in ("jpg", "jpeg"):
+            if target_fmt == "jpg":
                 ext = "jpg"
                 rgb = im.convert("RGB")
                 save_kw: Dict[str, Any] = {"format": "JPEG", "quality": 95}
@@ -104,10 +105,21 @@ def save_generated_image_atomically(
                 rgb.save(out_buf, **save_kw)
             elif target_fmt == "webp":
                 ext = "webp"
-                im.save(out_buf, format="WEBP", quality=95)
+                webp_im = im
+                if im.mode == "P":
+                    webp_im = im.convert("RGBA" if "transparency" in im.info else "RGB")
+                elif im.mode not in ("RGB", "RGBA"):
+                    webp_im = im.convert("RGB")
+                save_kw_webp: Dict[str, Any] = {"format": "WEBP", "quality": 95}
+                if exif_bytes:
+                    save_kw_webp["exif"] = exif_bytes
+                webp_im.save(out_buf, **save_kw_webp)
             else:
                 ext = "png"
-                im.save(out_buf, format="PNG")
+                png_im = im
+                if im.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+                    png_im = im.convert("RGBA")
+                png_im.save(out_buf, format="PNG")
             final_bytes = out_buf.getvalue()
         final_info = inspect_image_bytes(final_bytes)
 
@@ -337,6 +349,9 @@ def sync_job_manifest(
                 "aspect_ratio": job_data.get("aspect_ratio"),
                 "metadata_language": job_data.get("metadata_language"),
                 "metadata_export_mode": export_mode,
+                "export_image_format": normalize_export_image_format(
+                    job_data.get("export_image_format")
+                ),
                 "caption_prompt": job_data.get("caption_prompt") or "",
                 "use_ai_caption_prompt": job_data.get("use_ai_caption_prompt", True),
                 "optimize_prompt_english": job_data.get("optimize_prompt_english"),

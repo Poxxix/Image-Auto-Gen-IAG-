@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 from PIL import Image
 
+from config import normalize_export_image_format
 from database.db_manager import db, now_iso
 from modules.app_logging import logger
 from modules.export_manager import (
@@ -740,9 +741,12 @@ class JobRunner:
             self._deferred_generations.discard(gen_id)
             self._sim_failures.pop(gen_id, None)
 
-        # Save image atomically right away so metadata failure can NEVER lose the image
+        # Refresh job state & settings so format / export_mode / caption_prompt changes take effect immediately
+        job = db.get_job(job_id) or job
         settings = db.get_settings(include_secrets=True)
-        preferred_fmt = str(settings.get("export_image_format") or "original")
+        preferred_fmt = normalize_export_image_format(
+            job.get("export_image_format") or settings.get("export_image_format") or "original"
+        )
         dhash_thresh = int(settings.get("dhash_warning_threshold") or 6)
 
         saved_file = save_generated_image_atomically(
@@ -760,8 +764,6 @@ class JobRunner:
             threshold=dhash_thresh,
         )
 
-        # Refresh job state in case export_mode or caption_prompt was changed mid-run
-        job = db.get_job(job_id) or job
         export_mode = (job.get("metadata_export_mode") or "json").strip().lower()
 
         if export_mode == "none":

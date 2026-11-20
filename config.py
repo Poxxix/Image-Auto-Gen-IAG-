@@ -77,6 +77,40 @@ METADATA_EXPORT_MODES: List[str] = [
     "none",
 ]
 
+# Supported Exported Image Formats (per-set override or workspace default)
+# - "original": Keep exact bytes & format returned by provider (preserves provenance)
+# - "png": Re-encode atomically as lossless PNG (.png)
+# - "jpg": Re-encode atomically as JPEG (.jpg, quality=95)
+# - "webp": Re-encode atomically as WebP (.webp, quality=95)
+EXPORT_IMAGE_FORMATS: List[str] = [
+    "original",
+    "png",
+    "jpg",
+    "webp",
+]
+
+
+def normalize_export_image_format(
+    value: Optional[str],
+    default: str = "original",
+    strict: bool = False,
+) -> str:
+    """Normalize and validate an exported image format string."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        if strict and value is not None:
+            raise ValueError("Invalid export_image_format.")
+        return default
+    if raw == "jpeg":
+        raw = "jpg"
+    if raw in EXPORT_IMAGE_FORMATS:
+        return raw
+    if strict:
+        raise ValueError(
+            f"Unsupported export_image_format '{value}'. Expected one of: {', '.join(EXPORT_IMAGE_FORMATS)}."
+        )
+    return default
+
 DEFAULT_CAPTION_PROMPT: str = (
     "Write a catchy, aesthetic Pinterest Pin Title, an engaging social hook Caption, "
     "a 2-3 sentence SEO-friendly Description that inspires saves and clicks, and 6-10 relevant "

@@ -284,7 +284,9 @@ export function App() {
       updateJobInState(updated)
       const modeMsg = updates.metadata_export_mode
         ? `Export mode switched to ${updates.metadata_export_mode.toUpperCase()} and synced on disk.`
-        : `Updated set #${jobId} settings.`
+        : updates.export_image_format
+          ? `Image export format set to ${updates.export_image_format.toUpperCase()} for generated outputs.`
+          : `Updated set #${jobId} settings.`
       setNotice({
         tone: "emerald",
         message: modeMsg,

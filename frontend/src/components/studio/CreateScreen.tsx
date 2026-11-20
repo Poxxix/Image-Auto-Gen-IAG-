@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
+  EXPORT_IMAGE_FORMAT_OPTIONS,
   getReferenceImageUrl,
   suggestVariationAxes,
   type CaptionStylePreset,
@@ -41,6 +42,7 @@ import {
   type ImageSetJob,
   type JobVariationAxesPool,
   type MetadataExportMode,
+  type ExportImageFormat,
   type ProviderModel,
   type ReferenceItem,
   type ReferenceMode,
@@ -149,6 +151,10 @@ export function CreateScreen({
     React.useState<MetadataExportMode>(
       settings?.default_metadata_export_mode || "json"
     )
+  const [exportImageFormat, setExportImageFormat] =
+    React.useState<ExportImageFormat>(
+      settings?.export_image_format || "original"
+    )
   const [captionPrompt, setCaptionPrompt] = React.useState<string>(
     settings?.default_caption_prompt || defaultCaptionPrompt
   )
@@ -180,6 +186,9 @@ export function CreateScreen({
       }
       if (settings.default_metadata_export_mode) {
         setMetadataExportMode(settings.default_metadata_export_mode)
+      }
+      if (settings.export_image_format) {
+        setExportImageFormat(settings.export_image_format)
       }
       if (settings.default_caption_prompt) {
         setCaptionPrompt(settings.default_caption_prompt)
@@ -441,6 +450,7 @@ export function CreateScreen({
       aspect_ratio: aspectRatio,
       metadata_language: metadataLanguage,
       metadata_export_mode: metadataExportMode,
+      export_image_format: exportImageFormat,
       caption_prompt: captionPrompt.trim(),
       use_ai_caption_prompt: useAiCaptionPrompt,
       optimize_prompt_english: optimizePromptEnglish,
@@ -485,6 +495,15 @@ export function CreateScreen({
 
   const supportedRatios =
     currentModelInfo?.supported_aspect_ratios || aspectRatios
+
+  const supportedImageFormats = (
+    (currentModelInfo?.supported_formats as ExportImageFormat[] | undefined) || [
+      "original",
+      "png",
+      "jpg",
+      "webp",
+    ]
+  )
 
   const parsedAngles = splitLines(axesText.camera_angles)
   const parsedLighting = splitLines(axesText.lighting)
@@ -1057,6 +1076,63 @@ export function CreateScreen({
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+              </div>
+
+              {/* Export Image File Format Selector (Original / PNG / JPG / WebP) */}
+              <div className="rounded-2xl bg-white/[0.025] p-4 ring-1 ring-white/[0.08] flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold text-white">
+                      Export Image Format (Loại ảnh xuất)
+                    </p>
+                    <p className="text-[11px] text-[#9ca3af]">
+                      Chọn định dạng ảnh lưu trên ổ đĩa cho bộ ảnh này (mặc định đồng bộ từ Settings).
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 font-mono-tech text-[10px] font-semibold uppercase text-emerald-300 ring-1 ring-emerald-400/25">
+                    .{exportImageFormat === "original" ? "orig" : exportImageFormat}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                  {EXPORT_IMAGE_FORMAT_OPTIONS.filter((fmt) =>
+                    supportedImageFormats.includes(fmt.id)
+                  ).map((fmt) => {
+                    const active = exportImageFormat === fmt.id
+                    return (
+                      <button
+                        key={fmt.id}
+                        type="button"
+                        onClick={() => setExportImageFormat(fmt.id)}
+                        className={cn(
+                          "flex flex-col items-start gap-1 rounded-xl p-3 text-left ring-1 transition-all cursor-pointer",
+                          active
+                            ? "bg-emerald-400/12 text-white ring-emerald-400/45 shadow-sm"
+                            : "bg-white/[0.02] text-[#9ca3af] ring-white/[0.06] hover:bg-white/[0.05] hover:text-white"
+                        )}
+                      >
+                        <div className="flex w-full items-center justify-between gap-1.5">
+                          <span className="text-xs font-semibold text-white">
+                            {fmt.label}
+                          </span>
+                          <span
+                            className={cn(
+                              "rounded-full px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold",
+                              active
+                                ? "bg-emerald-400 text-[#050505]"
+                                : "bg-white/[0.06] text-[#9ca3af]"
+                            )}
+                          >
+                            {fmt.badge}
+                          </span>
+                        </div>
+                        <span className="text-[10px] leading-snug text-[#9ca3af]">
+                          {fmt.description}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 
@@ -1771,22 +1847,34 @@ export function CreateScreen({
                 </p>
                 {metadataExportMode === "json" && (
                   <>
-                    <p className="pl-2 text-[#646b78]">├── 001_slug.png + 001_slug.json</p>
-                    <p className="pl-2 text-[#646b78]">├── 002_slug.png + 002_slug.json</p>
+                    <p className="pl-2 text-[#646b78]">
+                      ├── 001_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 001_slug.json
+                    </p>
+                    <p className="pl-2 text-[#646b78]">
+                      ├── 002_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 002_slug.json
+                    </p>
                     <p className="pl-2 text-[#646b78]">└── manifest.json</p>
                   </>
                 )}
                 {metadataExportMode === "caption" && (
                   <>
-                    <p className="pl-2 text-amber-300/80">├── 001_slug.png + 001_slug.txt</p>
-                    <p className="pl-2 text-amber-300/80">├── 002_slug.png + 002_slug.txt</p>
+                    <p className="pl-2 text-amber-300/80">
+                      ├── 001_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 001_slug.txt
+                    </p>
+                    <p className="pl-2 text-amber-300/80">
+                      ├── 002_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 002_slug.txt
+                    </p>
                     <p className="pl-2 text-amber-300/80">└── captions.txt (Pin SEO)</p>
                   </>
                 )}
                 {metadataExportMode === "none" && (
                   <>
-                    <p className="pl-2 text-emerald-300/80">├── 001_slug.png (Image only)</p>
-                    <p className="pl-2 text-emerald-300/80">└── 002_slug.png (Max speed)</p>
+                    <p className="pl-2 text-emerald-300/80">
+                      ├── 001_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} (Image only)
+                    </p>
+                    <p className="pl-2 text-emerald-300/80">
+                      └── 002_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} (Max speed)
+                    </p>
                   </>
                 )}
               </div>
@@ -1814,6 +1902,7 @@ export function CreateScreen({
                       </p>
                       <p className="mt-0.5 font-mono-tech text-[11px] text-[#9ca3af]">
                         #{job.id} · {job.counts.completed}/{job.counts.total} done · {job.aspect_ratio} ·{" "}
+                        {(job.export_image_format || "original").toUpperCase()} ·{" "}
                         {(job.metadata_export_mode || "json").toUpperCase()}
                       </p>
                     </div>

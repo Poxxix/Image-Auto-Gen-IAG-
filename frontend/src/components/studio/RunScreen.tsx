@@ -577,6 +577,12 @@ export function RunScreen({
                 </span>
               </div>
               <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
+                <span>Image format</span>
+                <span className="font-mono-tech text-emerald-300 uppercase">
+                  {job.export_image_format || "original"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
                 <span>Estimated cost</span>
                 <span className="font-mono-tech text-[#e5e7eb]">
                   {modelInfo?.cost_estimate || "Session-based"}

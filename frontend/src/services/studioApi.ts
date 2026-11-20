@@ -3,6 +3,44 @@ export type StudioTab = "create" | "plan" | "run" | "gallery" | "settings"
 export type ReferenceMode = "prompt_only" | "local_upload" | "pinterest"
 export type RunMode = "fixed" | "continuous"
 export type MetadataExportMode = "json" | "caption" | "none"
+export type ExportImageFormat = "original" | "png" | "jpg" | "webp"
+
+export const EXPORT_IMAGE_FORMAT_OPTIONS: ReadonlyArray<{
+  id: ExportImageFormat
+  label: string
+  shortLabel: string
+  badge: string
+  description: string
+}> = [
+  {
+    id: "original",
+    label: "Original (Gốc)",
+    shortLabel: "Original",
+    badge: "AUTO",
+    description: "Giữ nguyên byte & định dạng gốc từ AI",
+  },
+  {
+    id: "png",
+    label: "PNG (.png)",
+    shortLabel: "PNG",
+    badge: "LOSSLESS",
+    description: "Không nén mất dữ liệu, độ nét cao nhất",
+  },
+  {
+    id: "jpg",
+    label: "JPEG (.jpg)",
+    shortLabel: "JPG",
+    badge: "LIGHT",
+    description: "File nhẹ, tương thích mọi nền tảng web",
+  },
+  {
+    id: "webp",
+    label: "WebP (.webp)",
+    shortLabel: "WebP",
+    badge: "COMPACT",
+    description: "Tối ưu dung lượng nhẹ, giữ chất lượng cao",
+  },
+]
 
 export type GenerationStatus =
   | "planned"
@@ -140,6 +178,7 @@ export interface ImageSetJob {
   aspect_ratio: string
   metadata_language: string
   metadata_export_mode: MetadataExportMode
+  export_image_format?: ExportImageFormat
   caption_prompt: string
   use_ai_caption_prompt: boolean
   optimize_prompt_english: boolean
@@ -210,7 +249,7 @@ export interface StudioSettings {
   reference_similarity_check?: boolean
   drop_ref_on_similarity_retry?: boolean
   export_root_dir: string
-  export_image_format: "original" | "png" | "jpg" | "webp"
+  export_image_format: ExportImageFormat
   max_concurrency: number
   dhash_warning_threshold: number
   gemini_api_key: string
@@ -239,6 +278,7 @@ export interface SystemStatusResponse {
   aspect_ratios: string[]
   metadata_languages: string[]
   metadata_export_modes?: MetadataExportMode[]
+  export_image_formats?: ExportImageFormat[]
   settings: StudioSettings
   summary: {
     total_jobs: number
@@ -269,6 +309,7 @@ export interface CreateJobPayload {
   aspect_ratio: string
   metadata_language: string
   metadata_export_mode?: MetadataExportMode
+  export_image_format?: ExportImageFormat
   caption_prompt?: string
   use_ai_caption_prompt?: boolean
   optimize_prompt_english: boolean

@@ -9,6 +9,7 @@ A high-precision local creative workbench for planning, generating, auditing, an
 ### Create · Plan · Run · Gallery · Settings
 1. **Create (`01`) — Creative Brief & Flexible Frameworks:**
    - **3 Reference Modes:** Pure Prompt, Local Image Upload (`PNG`/`JPG`/`WEBP`), or Pinterest Discovery (keyword, Pin URL, or Board URL) with Round-Robin cycling.
+   - **Per-Set Output Image Format:** Choose `Original`, `PNG (.png)`, `JPG (.jpg)`, or `WebP (.webp)` right at the Create Brief step (defaults to Settings if unchanged).
    - **10 Domain Presets:** Universal Adaptive, Beauty/Nails/Fashion, Product Studio, Architecture & Interior, Editorial Lifestyle, Cinematic Concept, **Wallpaper & Screen Art**, **Painting / Charcoal & Fine Art**, **Front-Facing & Symmetrical**, and **E-Commerce Clean Plinth**.
    - **Toggleable Continuity & Variation Axes + 5th Custom Axis:** Enable or disable individual Locked Continuity fields (`Subject`, `Style`, `Color Palette`, `Brand Mood`) and any Variation Axis (`Camera Angles`, `Compositions`, `Lighting`, `Atmospheres`, plus a custom-named 5th axis) so wallpapers, flat artwork, and straight-on portraits never receive unwanted camera rotations.
    - **3-Tier AI Axis Suggest + Sample Prompt & JSON Import:** Auto-tailor Continuity & Variation Axes via Official Vision API, Chrome CDP session, or the built-in Smart Domain Analyzer — or copy a tailored **Sample Master Prompt** into ChatGPT / Gemini / Claude / Grok and paste/upload the returned JSON back via **Sample Prompt & Import**.
@@ -148,7 +149,6 @@ Run the offline verification suite anytime after modifying backend modules:
 ./.venv/bin/python scripts/run_module_audit.py --module all
 ```
 
----
 
 ## Acknowledgements
 

@@ -14,6 +14,7 @@ from config import (
     BASE_DIR,
     CAPTION_STYLE_PRESETS,
     DEFAULT_CAPTION_PROMPT,
+    EXPORT_IMAGE_FORMATS,
     EXPORTS_DIR,
     METADATA_EXPORT_MODES,
     METADATA_LANGUAGES,
@@ -21,6 +22,7 @@ from config import (
     REFERENCES_DIR,
     STUDIO_PRESETS,
     ensure_directories,
+    normalize_export_image_format,
 )
 from database.db_manager import db, slugify_theme
 from modules.app_logging import logger
@@ -114,6 +116,7 @@ class CreateJobRequest(BaseModel):
     aspect_ratio: str = "1:1"
     metadata_language: str = "English"
     metadata_export_mode: str = "json"           # json | caption | none
+    export_image_format: Optional[str] = None    # original | png | jpg | webp
     caption_prompt: str = DEFAULT_CAPTION_PROMPT
     use_ai_caption_prompt: bool = True
     optimize_prompt_english: bool = True
@@ -138,6 +141,7 @@ class UpdateJobRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     metadata_language: Optional[str] = None
     metadata_export_mode: Optional[str] = None
+    export_image_format: Optional[str] = None
     caption_prompt: Optional[str] = None
     use_ai_caption_prompt: Optional[bool] = None
     optimize_prompt_english: Optional[bool] = None
@@ -225,6 +229,7 @@ def get_system_status() -> Dict[str, Any]:
         "aspect_ratios": list(ASPECT_RATIOS.keys()),
         "metadata_languages": METADATA_LANGUAGES,
         "metadata_export_modes": METADATA_EXPORT_MODES,
+        "export_image_formats": EXPORT_IMAGE_FORMATS,
         "settings": db.get_settings(include_secrets=False),
         "summary": db.get_system_summary(),
     }
@@ -488,6 +493,16 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     if export_mode not in ("json", "caption", "none"):
         export_mode = "json"
 
+    default_fmt = db.get_settings(include_secrets=False).get("export_image_format") or "original"
+    try:
+        image_format = normalize_export_image_format(
+            req.export_image_format if req.export_image_format is not None else default_fmt,
+            default=default_fmt,
+            strict=req.export_image_format is not None,
+        )
+    except ValueError as verr:
+        raise HTTPException(status_code=400, detail=str(verr))
+
     job = db.create_job(
         theme=req.theme,
         base_prompt=req.base_prompt,
@@ -500,6 +515,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         aspect_ratio=req.aspect_ratio,
         metadata_language=req.metadata_language,
         metadata_export_mode=export_mode,
+        export_image_format=image_format,
         caption_prompt=req.caption_prompt,
         use_ai_caption_prompt=req.use_ai_caption_prompt,
         optimize_prompt_english=req.optimize_prompt_english,
@@ -515,7 +531,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
 
     sync_job_manifest(job["id"], rewrite_all_sidecars=False)
     db.log_activity(
-        f"Created image set #{job['id']} '{job['theme']}' with {len(planned_turns)} variation(s) (export={export_mode}).",
+        f"Created image set #{job['id']} '{job['theme']}' with {len(planned_turns)} variation(s) (export={export_mode}, format={image_format}).",
         stage="PLANNER",
         job_id=job["id"],
     )
@@ -551,6 +567,15 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         if mode not in ("json", "caption", "none"):
             raise HTTPException(status_code=400, detail="Invalid metadata_export_mode.")
         updates["metadata_export_mode"] = mode
+
+    if "export_image_format" in updates:
+        try:
+            updates["export_image_format"] = normalize_export_image_format(
+                updates["export_image_format"],
+                strict=True,
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
 
     if any(k in updates for k in ("fixed_elements", "variation_axes")):
         effective_preset = str(updates.get("preset_id") or existing.get("preset_id") or "")
@@ -1115,6 +1140,15 @@ def api_get_settings() -> Dict[str, Any]:
 
 @app.put("/api/settings")
 def api_update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
+    if "export_image_format" in updates:
+        try:
+            updates["export_image_format"] = normalize_export_image_format(
+                updates["export_image_format"],
+                strict=True,
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
+
     if "export_root_dir" in updates and updates["export_root_dir"]:
         raw_dir = str(updates["export_root_dir"]).strip()
         try:

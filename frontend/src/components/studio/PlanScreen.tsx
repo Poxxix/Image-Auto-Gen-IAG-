@@ -42,11 +42,13 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
+  EXPORT_IMAGE_FORMAT_OPTIONS,
   getReferenceImageUrl,
   suggestVariationAxes,
   type CreateJobPayload,
   type EnabledAxes,
   type EnabledFixed,
+  type ExportImageFormat,
   type FixedElements,
   type GenerationItem,
   type ImageSetJob,
@@ -949,8 +951,37 @@ export function PlanScreen({
               </div>
             </div>
 
-            {/* Row 5: Post-Image Export Mode & Caption Prompt */}
-            <div className="grid grid-cols-1 gap-4 border-t border-white/[0.06] pt-4 sm:grid-cols-2 items-center">
+            {/* Row 5: Image Format, Post-Image Export Mode & AI Caption Switch */}
+            <div className="grid grid-cols-1 gap-4 border-t border-white/[0.06] pt-4 lg:grid-cols-3 items-center">
+              <div>
+                <p className="text-xs font-medium text-white">
+                  Export Image Format (Loại ảnh)
+                </p>
+                <div className="mt-1.5 inline-flex flex-wrap items-center rounded-full bg-black/40 p-1 ring-1 ring-white/[0.1]">
+                  {EXPORT_IMAGE_FORMAT_OPTIONS.map((fmt) => {
+                    const currentFmt: ExportImageFormat =
+                      job.export_image_format || "original"
+                    return (
+                      <button
+                        key={fmt.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateJob(job.id, { export_image_format: fmt.id })
+                        }
+                        className={cn(
+                          "rounded-full px-3 py-1 text-xs font-medium transition-all cursor-pointer",
+                          currentFmt === fmt.id
+                            ? "bg-emerald-400 text-[#050505] font-semibold"
+                            : "text-[#9ca3af] hover:text-white"
+                        )}
+                      >
+                        {fmt.shortLabel}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
               <div>
                 <p className="text-xs font-medium text-white">
                   Post-Image Export Mode
@@ -1049,9 +1080,14 @@ export function PlanScreen({
             <p className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
               Set Strategy & Format
             </p>
-            <span className="rounded-md bg-white/[0.06] px-2 py-0.5 font-mono-tech text-[10px] text-white">
-              {job.aspect_ratio}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 font-mono-tech text-[10px] uppercase text-emerald-300 ring-1 ring-emerald-400/20">
+                {job.export_image_format || "original"}
+              </span>
+              <span className="rounded-md bg-white/[0.06] px-2 py-0.5 font-mono-tech text-[10px] text-white">
+                {job.aspect_ratio}
+              </span>
+            </div>
           </div>
           <p className="mt-1 text-sm font-medium text-white">
             {job.run_mode === "fixed"

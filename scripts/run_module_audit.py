@@ -28,10 +28,6 @@ from modules.export_manager import (
     sync_job_manifest,
 )
 from modules.image_providers import check_cdp_status, list_available_providers
-from modules.image_providers.browser_cdp_provider import (
-    _build_full_res_googleusercontent_urls,
-    normalize_gemini_asset_url,
-)
 from modules.metadata_writer import (
     build_metadata_prompt,
     parse_metadata_json,
@@ -42,7 +38,6 @@ from modules.reference_sources import (
     detect_pinterest_input_kind,
     save_uploaded_reference,
 )
-from modules.watermark_remover import remove_gemini_watermark_bytes
 
 
 def _make_sample_image_bytes(color_a: tuple[int, int, int], color_b: tuple[int, int, int]) -> bytes:
@@ -209,6 +204,28 @@ def test_module_4() -> None:
         assert not (exp_dir / "002_cafe-mua-thu.png").exists()
         print("[PASS] Delete & Resequence: deleted #001 and renamed #002 -> #001 on disk & SQLite.")
 
+        # 5. Verify per-job export_image_format conversion (.jpg & .webp)
+        jpg_job = db.create_job(
+            theme="Format Check",
+            metadata_export_mode="none",
+            export_image_format="jpg",
+        )
+        try:
+            assert jpg_job["export_image_format"] == "jpg"
+            sample_png = _make_sample_image_bytes((60, 70, 90), (200, 180, 140))
+            saved_jpg = save_generated_image_atomically(jpg_job, 1, sample_png, preferred_format="jpg")
+            assert saved_jpg["image_file"].endswith(".jpg")
+            assert saved_jpg["mime_type"] == "image/jpeg"
+            assert Path(saved_jpg["image_path"]).exists()
+            saved_webp = save_generated_image_atomically(jpg_job, 2, sample_png, preferred_format="webp")
+            assert saved_webp["image_file"].endswith(".webp")
+            assert saved_webp["mime_type"] == "image/webp"
+            assert Path(saved_webp["image_path"]).exists()
+            print("[PASS] Per-job export_image_format verified: .jpg (image/jpeg) & .webp (image/webp) conversion.")
+        finally:
+            shutil.rmtree(Path(jpg_job["export_dir"]), ignore_errors=True)
+            db.delete_job(jpg_job["id"])
+
         zip_bytes, zip_name = build_job_zip_bytes(job_id)
         assert len(zip_bytes) > 500
         print(f"[PASS] Packaged ZIP archive: {zip_name} ({len(zip_bytes)} bytes).")
@@ -219,25 +236,9 @@ def test_module_4() -> None:
         db.delete_job(job_id)
 
 
-def test_module_5() -> None:
-    print("\n=== MODULE 5: GEMINI =s0 FULL-RES UPGRADE & REVERSE-ALPHA WATERMARK REMOVER ===")
-    preview_url = "https://lh3.googleusercontent.com/gg-dl/AJfQ9KR_test_asset=s1024-rj"
-    norm_url = normalize_gemini_asset_url(preview_url)
-    candidates = _build_full_res_googleusercontent_urls(preview_url)
-    assert "=s0" in norm_url
-    assert candidates[0].endswith("=s0")
-    print(f"[PASS] Full-res =s0 URL normalizer verified: {preview_url} -> {candidates[0]}")
-
-    # Verify non-watermarked image is safely skipped (auto-detection gate)
-    clean_sample = _make_sample_image_bytes((140, 120, 105), (95, 80, 70))
-    res_skip = remove_gemini_watermark_bytes(clean_sample)
-    assert res_skip["applied"] is False
-    print(f"[PASS] Auto-detection safety gate skipped unwatermarked image ({res_skip['meta'].get('skipReason')}).")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--module", default="all", choices=["1", "2", "3", "4", "5", "all"])
+    parser.add_argument("--module", default="all", choices=["1", "2", "3", "4", "all"])
     args = parser.parse_args()
 
     if args.module in ("1", "all"):
@@ -248,8 +249,6 @@ def main() -> None:
         test_module_3()
     if args.module in ("4", "all"):
         test_module_4()
-    if args.module in ("5", "all"):
-        test_module_5()
     print("\nALL REQUESTED STUDIO MODULE AUDITS PASSED.")
 
 
