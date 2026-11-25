@@ -1,12 +1,15 @@
 from typing import Any, Callable, Dict, List, Optional
 
-from config import PROVIDER_MODELS
+from config import PROVIDER_MODELS, normalize_cdp_slots
 from modules.image_providers.browser_cdp_provider import (
     ProviderAuthError,
     ReferenceTooSimilarError,
     check_cdp_status,
     generate_image_via_cdp,
+    get_preferred_online_cdp_port,
     launch_chrome_ai_master,
+    launch_chrome_slot,
+    list_cdp_slots_status,
 )
 from modules.image_providers.cdp_worker import run_cdp_image_turn_isolated
 from modules.reference_sources.image_utils import (
@@ -22,8 +25,13 @@ def list_available_providers() -> List[Dict[str, Any]]:
     """
     from database.db_manager import db
 
-    cdp = check_cdp_status()
     settings = db.get_settings(include_secrets=True)
+    slots = normalize_cdp_slots(settings.get("cdp_slots"))
+    slot_statuses = list_cdp_slots_status(slots=slots)
+    enabled_slots = [s for s in slot_statuses if s.get("enabled", True)]
+    online_slots = [s for s in slot_statuses if s.get("connected")]
+    enabled_count = max(1, len(enabled_slots))
+
     has_gemini_key = bool(str(settings.get("gemini_api_key") or "").strip())
     has_openai_key = bool(str(settings.get("openai_api_key") or "").strip())
 
@@ -32,13 +40,18 @@ def list_available_providers() -> List[Dict[str, Any]]:
         item = dict(meta)
         if meta["mode"] == "browser_cdp":
             eng = meta["engine"]
-            item["ready"] = bool(cdp["connected"])
-            item["tab_open"] = eng in (cdp.get("open_engines") or [])
-            item["status_label"] = (
-                f"Connected (:9222 · {eng.capitalize()} tab open)"
-                if item["ready"] and item["tab_open"]
-                else ("Connected (:9222)" if item["ready"] else "Browser (:9222) offline — click Launch")
-            )
+            item["max_concurrency"] = enabled_count
+            item["ready"] = bool(online_slots)
+            item["tab_open"] = any(eng in (s.get("open_engines") or []) for s in online_slots)
+            if online_slots:
+                ports_str = ", ".join(f":{s['port']}" for s in online_slots)
+                item["status_label"] = (
+                    f"Connected ({len(online_slots)}/{enabled_count} Chrome slots {ports_str} · {eng.capitalize()} ready)"
+                    if item["tab_open"]
+                    else f"Connected ({len(online_slots)}/{enabled_count} Chrome slots {ports_str})"
+                )
+            else:
+                item["status_label"] = "Browser Slots offline — click Launch"
         elif meta["engine"] == "gemini_api":
             item["ready"] = has_gemini_key
             item["status_label"] = "API Key configured" if has_gemini_key else "Requires Gemini API Key in Settings"
@@ -63,6 +76,8 @@ def generate_image_for_turn(
     check_ref_similarity: bool = True,
     recycle_tab: bool = False,
     metadata_request: Optional[Dict[str, Any]] = None,
+    cdp_port: Optional[int] = None,
+    slot_id: int = 1,
 ) -> Dict[str, Any]:
     """Dispatches a single turn's image generation to the selected provider adapter."""
     from database.db_manager import db
@@ -95,6 +110,8 @@ def generate_image_for_turn(
             watchdog_sec=watchdog_sec,
             recycle_tab=recycle_tab,
             metadata_request=metadata_request,
+            cdp_port=cdp_port,
+            slot_id=slot_id,
         )
     elif engine == "gemini_api":
         result = generate_image_via_gemini_api(

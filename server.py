@@ -14,15 +14,23 @@ from config import (
     BASE_DIR,
     CAPTION_STYLE_PRESETS,
     DEFAULT_CAPTION_PROMPT,
+    DEFAULT_PICASSY_CATEGORIES,
     EXPORT_IMAGE_FORMATS,
     EXPORTS_DIR,
+    FILENAME_STYLES,
+    MAX_CDP_SLOTS,
     METADATA_EXPORT_MODES,
     METADATA_LANGUAGES,
+    METADATA_PROVIDERS,
+    METADATA_VISION_MODES,
     PROVIDER_MODELS,
     REFERENCES_DIR,
     STUDIO_PRESETS,
     ensure_directories,
+    normalize_cdp_slots,
     normalize_export_image_format,
+    normalize_filename_style,
+    normalize_picassy_categories,
 )
 from database.db_manager import db, slugify_theme
 from modules.app_logging import logger
@@ -40,8 +48,9 @@ from modules.export_manager import (
 )
 from modules.image_providers import (
     check_cdp_status,
-    launch_chrome_ai_master,
+    launch_chrome_slot,
     list_available_providers,
+    list_cdp_slots_status,
 )
 from modules.job_runner import runner
 from modules.metadata_writer import write_generation_metadata
@@ -93,6 +102,7 @@ app.add_middleware(
 class LaunchCDPRequest(BaseModel):
     engine: str = "gemini"
     force_restart: bool = False
+    slot_id: int = Field(default=1, ge=1, le=MAX_CDP_SLOTS)
 
 
 class PinterestDiscoverRequest(BaseModel):
@@ -117,6 +127,10 @@ class CreateJobRequest(BaseModel):
     metadata_language: str = "English"
     metadata_export_mode: str = "json"           # json | caption | none
     export_image_format: Optional[str] = None    # original | png | jpg | webp
+    primary_tag: Optional[str] = None
+    category: Optional[str] = None
+    filename_style: Optional[str] = None         # picassy_slug | studio_seq
+    preferred_cdp_slot: int = Field(default=0, ge=0, le=MAX_CDP_SLOTS)
     caption_prompt: str = DEFAULT_CAPTION_PROMPT
     use_ai_caption_prompt: bool = True
     optimize_prompt_english: bool = True
@@ -142,6 +156,10 @@ class UpdateJobRequest(BaseModel):
     metadata_language: Optional[str] = None
     metadata_export_mode: Optional[str] = None
     export_image_format: Optional[str] = None
+    primary_tag: Optional[str] = None
+    category: Optional[str] = None
+    filename_style: Optional[str] = None
+    preferred_cdp_slot: Optional[int] = None
     caption_prompt: Optional[str] = None
     use_ai_caption_prompt: Optional[bool] = None
     optimize_prompt_english: Optional[bool] = None
@@ -166,6 +184,7 @@ class UpdateGenerationRequest(BaseModel):
     title: Optional[str] = None
     caption: Optional[str] = None
     description: Optional[str] = None
+    alt_text: Optional[str] = None
     hashtags: Optional[str] = None
     variation_axes: Optional[Dict[str, Any]] = None
     fixed_elements: Optional[Dict[str, Any]] = None
@@ -176,7 +195,7 @@ class RetryGenerationRequest(BaseModel):
 
 
 class RetryMetadataRequest(BaseModel):
-    use_browser_turn: bool = False
+    use_browser_turn: Optional[bool] = None
 
 
 class ResetWorkspaceRequest(BaseModel):
@@ -214,14 +233,29 @@ class ImportAxesRequest(BaseModel):
     raw_text: str
 
 
+def _build_enriched_cdp_slots(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    slots = normalize_cdp_slots(settings.get("cdp_slots"))
+    statuses = list_cdp_slots_status(slots=slots, force=False)
+    runtime_map = runner.get_slot_runtime_map()
+    for st in statuses:
+        rt = runtime_map.get(int(st["slot_id"])) or {}
+        st["active_job_id"] = rt.get("active_job_id")
+        st["active_generation_id"] = rt.get("active_generation_id")
+    return statuses
+
+
 # =============================================================================
 # System & Provider Endpoints
 # =============================================================================
 @app.get("/api/system/status")
 def get_system_status() -> Dict[str, Any]:
+    settings = db.get_settings(include_secrets=False)
+    slots_info = _build_enriched_cdp_slots(settings)
+    primary_cdp = slots_info[0] if slots_info else check_cdp_status()
     return {
         "ok": True,
-        "cdp": check_cdp_status(),
+        "cdp": primary_cdp,
+        "cdp_slots": slots_info,
         "providers": list_available_providers(),
         "presets": STUDIO_PRESETS,
         "caption_style_presets": CAPTION_STYLE_PRESETS,
@@ -230,22 +264,35 @@ def get_system_status() -> Dict[str, Any]:
         "metadata_languages": METADATA_LANGUAGES,
         "metadata_export_modes": METADATA_EXPORT_MODES,
         "export_image_formats": EXPORT_IMAGE_FORMATS,
-        "settings": db.get_settings(include_secrets=False),
+        "filename_styles": FILENAME_STYLES,
+        "metadata_providers": METADATA_PROVIDERS,
+        "metadata_vision_modes": METADATA_VISION_MODES,
+        "picassy_categories": normalize_picassy_categories(
+            settings.get("picassy_categories") or DEFAULT_PICASSY_CATEGORIES
+        ),
+        "settings": settings,
         "summary": db.get_system_summary(),
     }
 
 
 @app.get("/api/providers")
 def get_providers() -> Dict[str, Any]:
+    settings = db.get_settings(include_secrets=False)
+    slots_info = _build_enriched_cdp_slots(settings)
     return {
         "providers": list_available_providers(),
-        "cdp": check_cdp_status(),
+        "cdp": slots_info[0] if slots_info else check_cdp_status(),
+        "cdp_slots": slots_info,
     }
 
 
 @app.post("/api/providers/cdp/launch")
 def api_launch_cdp(req: LaunchCDPRequest) -> Dict[str, Any]:
-    return launch_chrome_ai_master(engine=req.engine, force_restart=req.force_restart)
+    return launch_chrome_slot(
+        slot_id=req.slot_id,
+        engine=req.engine,
+        force_restart=req.force_restart,
+    )
 
 
 @app.post("/api/axes/suggest")
@@ -493,7 +540,8 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     if export_mode not in ("json", "caption", "none"):
         export_mode = "json"
 
-    default_fmt = db.get_settings(include_secrets=False).get("export_image_format") or "original"
+    settings_snapshot = db.get_settings(include_secrets=False)
+    default_fmt = settings_snapshot.get("export_image_format") or "original"
     try:
         image_format = normalize_export_image_format(
             req.export_image_format if req.export_image_format is not None else default_fmt,
@@ -502,6 +550,30 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         )
     except ValueError as verr:
         raise HTTPException(status_code=400, detail=str(verr))
+
+    default_fname_style = settings_snapshot.get("default_filename_style") or "picassy_slug"
+    try:
+        fname_style = normalize_filename_style(
+            req.filename_style if req.filename_style is not None else default_fname_style,
+            default=default_fname_style,
+            strict=req.filename_style is not None,
+        )
+    except ValueError as verr:
+        raise HTTPException(status_code=400, detail=str(verr))
+
+    clean_primary_tag = (req.primary_tag or "").strip() or req.theme.strip()
+    allowed_cats = normalize_picassy_categories(
+        settings_snapshot.get("picassy_categories") or DEFAULT_PICASSY_CATEGORIES
+    )
+    clean_category = (req.category or "").strip()
+    if clean_category:
+        matched_cat = next((c for c in allowed_cats if c.lower() == clean_category.lower()), None)
+        if not matched_cat:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Category '{clean_category}' is not in configured Picassy categories: {', '.join(allowed_cats)}.",
+            )
+        clean_category = matched_cat
 
     job = db.create_job(
         theme=req.theme,
@@ -516,6 +588,10 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         metadata_language=req.metadata_language,
         metadata_export_mode=export_mode,
         export_image_format=image_format,
+        primary_tag=clean_primary_tag,
+        category=clean_category,
+        filename_style=fname_style,
+        preferred_cdp_slot=req.preferred_cdp_slot,
         caption_prompt=req.caption_prompt,
         use_ai_caption_prompt=req.use_ai_caption_prompt,
         optimize_prompt_english=req.optimize_prompt_english,
@@ -531,7 +607,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
 
     sync_job_manifest(job["id"], rewrite_all_sidecars=False)
     db.log_activity(
-        f"Created image set #{job['id']} '{job['theme']}' with {len(planned_turns)} variation(s) (export={export_mode}, format={image_format}).",
+        f"Created image set #{job['id']} '{job['theme']}' ({len(planned_turns)} shots · tag='{clean_primary_tag}' · cat='{clean_category or 'Auto'}' · export={export_mode} · format={image_format}).",
         stage="PLANNER",
         job_id=job["id"],
     )
@@ -550,17 +626,56 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
     if not existing:
         raise HTTPException(status_code=404, detail=f"Job #{job_id} not found.")
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    has_saved_images = any(
+        (g.get("image_file") or g.get("image_path"))
+        for g in (existing.get("generations") or [])
+    )
     if "theme" in updates:
         clean_t = str(updates["theme"]).strip()
         if not clean_t:
             raise HTTPException(status_code=400, detail="Theme cannot be empty.")
         updates["theme"] = clean_t
-        has_saved_images = any(
-            (g.get("image_file") or g.get("image_path"))
-            for g in (existing.get("generations") or [])
-        )
-        if not has_saved_images:
+        if not has_saved_images and "primary_tag" not in updates:
             updates["slug"] = slugify_theme(clean_t)
+
+    if "primary_tag" in updates:
+        clean_pt = str(updates["primary_tag"]).strip()
+        if not clean_pt:
+            raise HTTPException(status_code=400, detail="Primary tag cannot be empty.")
+        updates["primary_tag"] = clean_pt
+        if not has_saved_images:
+            updates["slug"] = slugify_theme(clean_pt)
+
+    if "category" in updates:
+        clean_cat = str(updates["category"]).strip()
+        if clean_cat:
+            allowed_cats = normalize_picassy_categories(
+                db.get_settings(include_secrets=False).get("picassy_categories")
+                or DEFAULT_PICASSY_CATEGORIES
+            )
+            matched = next((c for c in allowed_cats if c.lower() == clean_cat.lower()), None)
+            if not matched:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Category '{clean_cat}' is not in configured Picassy categories.",
+                )
+            updates["category"] = matched
+        else:
+            updates["category"] = ""
+
+    if "filename_style" in updates:
+        try:
+            updates["filename_style"] = normalize_filename_style(
+                updates["filename_style"], strict=True
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
+
+    if "preferred_cdp_slot" in updates:
+        slot_num = int(updates["preferred_cdp_slot"])
+        if slot_num < 0 or slot_num > MAX_CDP_SLOTS:
+            raise HTTPException(status_code=400, detail=f"preferred_cdp_slot must be 0..{MAX_CDP_SLOTS}.")
+        updates["preferred_cdp_slot"] = slot_num
 
     if "metadata_export_mode" in updates:
         mode = str(updates["metadata_export_mode"]).strip().lower()
@@ -872,6 +987,8 @@ def api_update_generation(gen_id: int, req: UpdateGenerationRequest) -> Dict[str
         updates["caption"] = req.caption.strip()
     if req.description is not None:
         updates["description"] = req.description.strip()
+    if req.alt_text is not None:
+        updates["alt_text"] = req.alt_text.strip()
     if req.hashtags is not None:
         updates["hashtags"] = req.hashtags.strip()
     if req.fixed_elements is not None:
@@ -1149,6 +1266,41 @@ def api_update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         except ValueError as verr:
             raise HTTPException(status_code=400, detail=str(verr))
 
+    if "default_filename_style" in updates:
+        try:
+            updates["default_filename_style"] = normalize_filename_style(
+                updates["default_filename_style"],
+                strict=True,
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
+
+    if "metadata_provider" in updates:
+        mp = str(updates["metadata_provider"] or "").strip().lower()
+        if mp not in METADATA_PROVIDERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid metadata_provider. Expected one of: {', '.join(METADATA_PROVIDERS)}.",
+            )
+        updates["metadata_provider"] = mp
+
+    if "metadata_vision_mode" in updates:
+        mvm = str(updates["metadata_vision_mode"] or "").strip().lower()
+        if mvm not in METADATA_VISION_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid metadata_vision_mode. Expected one of: {', '.join(METADATA_VISION_MODES)}.",
+            )
+        updates["metadata_vision_mode"] = mvm
+
+    if "picassy_categories" in updates:
+        updates["picassy_categories"] = normalize_picassy_categories(
+            updates["picassy_categories"]
+        )
+
+    if "cdp_slots" in updates:
+        updates["cdp_slots"] = normalize_cdp_slots(updates["cdp_slots"])
+
     if "export_root_dir" in updates and updates["export_root_dir"]:
         raw_dir = str(updates["export_root_dir"]).strip()
         try:
@@ -1164,6 +1316,7 @@ def api_update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
                 detail=f"Cannot create export folder '{raw_dir}': {exc}",
             )
     updated = db.update_settings(updates)
+    runner.wake_workers()
     return {"settings": updated}
 
 

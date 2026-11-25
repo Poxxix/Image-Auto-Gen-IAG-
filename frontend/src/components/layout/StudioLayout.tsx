@@ -20,6 +20,7 @@ import { StudioBadge, StudioButton } from "@/components/shared/StudioPrimitives"
 import { BrandIcon } from "@/components/shared/BrandIcon"
 import {
   getJobZipUrl,
+  type CdpSlotStatus,
   type ImageSetJob,
   type MetadataExportMode,
   type StudioTab,
@@ -43,7 +44,7 @@ export interface StudioLayoutProps {
     message: string
   } | null
   onDismissNotice: () => void
-  onLaunchCdp: (engine?: string) => Promise<void>
+  onLaunchCdp: (engine?: string, forceRestart?: boolean, slotId?: number) => Promise<void>
   children: React.ReactNode
 }
 
@@ -67,7 +68,10 @@ export function StudioLayout({
   const [launchingCdp, setLaunchingCdp] = React.useState(false)
   const [setSearch, setSetSearch] = React.useState("")
 
-  const isCdpConnected = Boolean(status?.cdp?.online || status?.cdp?.connected)
+  const cdpSlots: CdpSlotStatus[] = status?.cdp_slots || []
+  const enabledSlots = cdpSlots.filter((s) => s.enabled)
+  const onlineSlots = enabledSlots.filter((s) => s.connected)
+  const isCdpConnected = onlineSlots.length > 0 || Boolean(status?.cdp?.online || status?.cdp?.connected)
   const plannedCount = activeJob?.counts?.planned || 0
   const runningCount = jobs.filter((j) => j.status === "running").length
   const completedCount = activeJob?.counts?.completed || 0
@@ -135,10 +139,10 @@ export function StudioLayout({
     )
   }, [jobs, setSearch])
 
-  const handleLaunchClick = async (engine = "gemini") => {
+  const handleLaunchClick = async (engine = "gemini", slotId = 1) => {
     setLaunchingCdp(true)
     try {
-      await onLaunchCdp(engine)
+      await onLaunchCdp(engine, false, slotId)
     } finally {
       setLaunchingCdp(false)
     }
@@ -366,7 +370,8 @@ export function StudioLayout({
                       </div>
 
                       <div className="flex items-center justify-between gap-1 pt-0.5">
-                        <span className="font-mono-tech text-[10px] text-[#646b78]">
+                        <span className="font-mono-tech text-[10px] text-[#646b78] truncate">
+                          {job.active_cdp_slot ? `S${job.active_cdp_slot} · ` : ""}
                           {job.aspect_ratio} ·{" "}
                           {expMode === "caption"
                             ? "TXT"
@@ -400,13 +405,13 @@ export function StudioLayout({
           </div>
         </div>
 
-        {/* Bottom AI Browser Bridge Status Card */}
+        {/* Bottom 4-Slot Chrome CDP Pool Card */}
         <div className="mt-3 rounded-2xl bg-white/[0.025] p-3 ring-1 ring-white/[0.07] space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <BrandIcon name="gemini" size={15} />
               <span className="text-xs font-semibold text-white">
-                AI Browser (:9222)
+                Chrome Pool ({onlineSlots.length}/{enabledSlots.length || 1})
               </span>
             </div>
             <StudioBadge
@@ -414,22 +419,49 @@ export function StudioLayout({
               label={isCdpConnected ? "Online" : "Standby"}
             />
           </div>
-          <p className="text-[10px] text-[#9ca3af] line-clamp-1">
-            {isCdpConnected
-              ? `Connected: ${(status?.cdp?.open_engines || []).join(", ") || "Chrome Session"}`
-              : "Launch Chrome (:9222) for Gemini / ChatGPT / Grok."}
-          </p>
-          <div className="flex items-center gap-1.5">
-            <StudioButton
-              variant="secondary"
-              loading={launchingCdp}
-              onClick={() => handleLaunchClick("gemini")}
-              icon={<Browsers size={13} />}
-              className="flex-1 justify-center h-7 text-[11px] px-2"
-            >
-              {launchingCdp ? "Opening…" : isCdpConnected ? "Focus Browser" : "Launch :9222"}
-            </StudioButton>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            {(cdpSlots.length > 0
+              ? cdpSlots
+              : [{ slot_id: 1, port: 9222, label: "Slot 1", enabled: true, connected: isCdpConnected, open_engines: [] as string[], active_job_id: null, active_generation_id: null }]
+            ).map((slot) => (
+              <button
+                key={slot.slot_id}
+                type="button"
+                disabled={launchingCdp}
+                onClick={() => handleLaunchClick("gemini", slot.slot_id)}
+                title={`${slot.label} (:${slot.port})${slot.active_job_id ? ` · Running Set #${slot.active_job_id}` : ""} — click to Launch/Focus`}
+                className={cn(
+                  "flex items-center justify-between rounded-xl px-2 py-1 text-[10px] font-mono-tech ring-1 transition-all cursor-pointer",
+                  slot.connected
+                    ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/35 hover:bg-emerald-500/25"
+                    : slot.enabled
+                      ? "bg-white/[0.04] text-[#d1d5db] ring-white/[0.09] hover:bg-white/[0.1]"
+                      : "bg-white/[0.015] text-[#646b78] ring-white/[0.04] opacity-70 hover:opacity-100"
+                )}
+              >
+                <span className="truncate">
+                  S{slot.slot_id} :{slot.port}
+                </span>
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full shrink-0",
+                    slot.active_job_id
+                      ? "bg-sky-400 animate-pulse"
+                      : slot.connected
+                        ? "bg-emerald-400"
+                        : "bg-[#4b5563]"
+                  )}
+                />
+              </button>
+            ))}
           </div>
+
+          <p className="text-[10px] text-[#9ca3af] line-clamp-1">
+            {onlineSlots.length > 0
+              ? `Active ports: ${onlineSlots.map((s) => `:${s.port}`).join(", ")}`
+              : "Click any slot above to launch Chrome (:9222–:9225)."}
+          </p>
         </div>
       </aside>
 
@@ -678,11 +710,13 @@ export function StudioLayout({
                 <StudioButton
                   variant="secondary"
                   loading={launchingCdp}
-                  onClick={() => handleLaunchClick("gemini")}
+                  onClick={() => handleLaunchClick("gemini", 1)}
                   icon={<Browsers size={14} />}
                   className="w-full justify-center h-8 text-xs"
                 >
-                  {isCdpConnected ? "AI Browser Online (:9222)" : "Open AI Browser (:9222)"}
+                  {isCdpConnected
+                    ? `AI Browser Online (${onlineSlots.length} slot${onlineSlots.length === 1 ? "" : "s"})`
+                    : "Open AI Browser (:9222)"}
                 </StudioButton>
               </div>
             </div>

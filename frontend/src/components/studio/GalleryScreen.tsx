@@ -46,6 +46,7 @@ import { cn } from "@/lib/utils"
 export interface GalleryScreenProps {
   jobs: ImageSetJob[]
   activeJob: ImageSetJob | null
+  picassyCategories?: string[]
   onSelectJob: (job: ImageSetJob) => void
   onNavigateTab: (tab: StudioTab) => void
   onUpdateJob: (jobId: number, updates: Partial<CreateJobPayload>) => Promise<void>
@@ -57,6 +58,7 @@ export interface GalleryScreenProps {
       title?: string
       caption?: string
       description?: string
+      alt_text?: string
       hashtags?: string
       prompt_final?: string
     }
@@ -69,9 +71,22 @@ export interface GalleryScreenProps {
   onDeleteJob: (jobId: number, deleteFiles: boolean) => Promise<void>
 }
 
+const DEFAULT_GALLERY_CATEGORIES = [
+  "AI Prompts",
+  "Anime",
+  "Art",
+  "Fashions",
+  "Nail",
+  "Photography Topics",
+  "Posters & Visuals",
+  "Tattoos",
+  "Wallpaper",
+]
+
 export function GalleryScreen({
   jobs,
   activeJob,
+  picassyCategories = DEFAULT_GALLERY_CATEGORIES,
   onSelectJob,
   onNavigateTab,
   onUpdateJob,
@@ -92,9 +107,8 @@ export function GalleryScreen({
   >("all")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [titleDrafts, setTitleDrafts] = React.useState<Record<number, string>>({})
-  const [captionDrafts, setCaptionDrafts] = React.useState<Record<number, string>>({})
   const [descDrafts, setDescDrafts] = React.useState<Record<number, string>>({})
-  const [tagsDrafts, setTagsDrafts] = React.useState<Record<number, string>>({})
+  const [altDrafts, setAltDrafts] = React.useState<Record<number, string>>({})
   const [promptDrafts, setPromptDrafts] = React.useState<Record<number, string>>({})
 
   const [savingId, setSavingId] = React.useState<number | null>(null)
@@ -103,15 +117,19 @@ export function GalleryScreen({
   const [regeneratingAll, setRegeneratingAll] = React.useState(false)
   const [removingWatermarks, setRemovingWatermarks] = React.useState(false)
 
-  // Set & Caption Prompt Editor
+  // Set & Picassy Config Editor
   const [showCaptionConfig, setShowCaptionConfig] = React.useState(false)
   const [themeDraft, setThemeDraft] = React.useState("")
+  const [primaryTagDraft, setPrimaryTagDraft] = React.useState("")
+  const [categoryDraft, setCategoryDraft] = React.useState("")
   const [captionPromptDraft, setCaptionPromptDraft] = React.useState("")
   const [savingJobConfig, setSavingJobConfig] = React.useState(false)
   const [pageIndex, setPageIndex] = React.useState(1)
   const pageSize = 24
 
   const currentJob = activeJob || jobs[0] || null
+  const categoryOptions =
+    picassyCategories.length > 0 ? picassyCategories : DEFAULT_GALLERY_CATEGORIES
 
   React.useEffect(() => {
     setPageIndex(1)
@@ -120,23 +138,22 @@ export function GalleryScreen({
   React.useEffect(() => {
     if (!currentJob) return
     const tMap: Record<number, string> = {}
-    const cMap: Record<number, string> = {}
     const dMap: Record<number, string> = {}
-    const hMap: Record<number, string> = {}
+    const aMap: Record<number, string> = {}
     const pMap: Record<number, string> = {}
     for (const g of currentJob.generations) {
       tMap[g.id] = g.title || ""
-      cMap[g.id] = g.caption || g.title || ""
       dMap[g.id] = g.description || ""
-      hMap[g.id] = g.hashtags || ""
+      aMap[g.id] = g.alt_text || ""
       pMap[g.id] = g.prompt_final || ""
     }
     setTitleDrafts(tMap)
-    setCaptionDrafts(cMap)
     setDescDrafts(dMap)
-    setTagsDrafts(hMap)
+    setAltDrafts(aMap)
     setPromptDrafts(pMap)
     setThemeDraft(currentJob.theme || "")
+    setPrimaryTagDraft(currentJob.primary_tag || currentJob.theme || "")
+    setCategoryDraft(currentJob.category || categoryOptions[0] || "Art")
     setCaptionPromptDraft(currentJob.caption_prompt || "")
     if (selectedGen) {
       const refreshed = currentJob.generations.find((x) => x.id === selectedGen.id)
@@ -162,17 +179,18 @@ export function GalleryScreen({
 
   const exportMode: MetadataExportMode = currentJob.metadata_export_mode || "json"
 
+  const jobPrimaryTag = (currentJob.primary_tag || currentJob.theme || "").trim()
+  const jobCategory = (currentJob.category || "Art").trim()
+
   const handleSaveMeta = async (gen: GenerationItem, force = false) => {
     const newTitle = (titleDrafts[gen.id] ?? gen.title).trim()
-    const newCaption = (captionDrafts[gen.id] ?? (gen.caption || gen.title)).trim()
     const newDesc = (descDrafts[gen.id] ?? gen.description).trim()
-    const newTags = (tagsDrafts[gen.id] ?? (gen.hashtags || "")).trim()
+    const newAlt = (altDrafts[gen.id] ?? (gen.alt_text || "")).trim()
     if (
       !force &&
       newTitle === (gen.title || "") &&
-      newCaption === (gen.caption || gen.title || "") &&
       newDesc === (gen.description || "") &&
-      newTags === (gen.hashtags || "")
+      newAlt === (gen.alt_text || "")
     ) {
       return
     }
@@ -180,9 +198,9 @@ export function GalleryScreen({
     try {
       await onUpdateMetadata(gen.id, {
         title: newTitle,
-        caption: newCaption,
+        caption: newTitle,
         description: newDesc,
-        hashtags: newTags,
+        alt_text: newAlt,
       })
       setSavedId(gen.id)
       setTimeout(() => setSavedId(null), 2000)
@@ -197,6 +215,8 @@ export function GalleryScreen({
     try {
       await onUpdateJob(currentJob.id, {
         theme: themeDraft.trim(),
+        primary_tag: primaryTagDraft.trim() || themeDraft.trim(),
+        category: categoryDraft.trim(),
         caption_prompt: captionPromptDraft.trim(),
       })
       setShowCaptionConfig(false)
@@ -232,20 +252,15 @@ export function GalleryScreen({
 
   const buildPinCopyBlock = (gen: GenerationItem) => {
     const t = (titleDrafts[gen.id] ?? gen.title).trim()
-    const c = (captionDrafts[gen.id] ?? (gen.caption || gen.title)).trim()
     const d = (descDrafts[gen.id] ?? gen.description).trim()
-    const h = (tagsDrafts[gen.id] ?? (gen.hashtags || "")).trim()
-    const lines = [t]
-    if (c && c !== t) lines.push(c)
-    if (d) {
-      lines.push("")
-      lines.push(d)
-    }
-    if (h && !d.includes(h)) {
-      lines.push("")
-      lines.push(h)
-    }
-    return lines.filter((x, i, a) => !(x === "" && a[i - 1] === "")).join("\n")
+    const a = (altDrafts[gen.id] ?? (gen.alt_text || "")).trim()
+    return [
+      `Tag chinh: ${jobPrimaryTag}`,
+      `Category: ${jobCategory}`,
+      `Title: ${t}`,
+      `Description: ${d}`,
+      `Alt text: ${a}`,
+    ].join("\n")
   }
 
   const filteredGenerations = currentJob.generations.filter((g) => {
@@ -257,9 +272,10 @@ export function GalleryScreen({
     if (!q) return true
     return (
       (g.title || "").toLowerCase().includes(q) ||
-      (g.caption || "").toLowerCase().includes(q) ||
       (g.description || "").toLowerCase().includes(q) ||
-      (g.hashtags || "").toLowerCase().includes(q) ||
+      (g.alt_text || "").toLowerCase().includes(q) ||
+      jobPrimaryTag.toLowerCase().includes(q) ||
+      jobCategory.toLowerCase().includes(q) ||
       (g.prompt_final || "").toLowerCase().includes(q) ||
       (g.image_file || "").toLowerCase().includes(q)
     )
@@ -269,10 +285,12 @@ export function GalleryScreen({
     JSON.stringify(
       {
         index: gen.index_num,
+        file_prefix: gen.image_file ? gen.image_file.replace(/\.[^.]+$/, "") : "",
+        primary_tag: jobPrimaryTag,
+        category: jobCategory,
         title: titleDrafts[gen.id] ?? gen.title,
-        caption: captionDrafts[gen.id] ?? (gen.caption || gen.title),
         description: descDrafts[gen.id] ?? gen.description,
-        hashtags: tagsDrafts[gen.id] ?? (gen.hashtags || ""),
+        alt_text: altDrafts[gen.id] ?? (gen.alt_text || ""),
         prompt_final: promptDrafts[gen.id] ?? gen.prompt_final,
         reference: gen.reference
           ? {
@@ -303,13 +321,15 @@ export function GalleryScreen({
             <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-[#f4f5f7]">
               {currentJob.theme}
             </h1>
+            <StudioBadge tone="sky" label={`Tag: ${jobPrimaryTag}`} />
+            <StudioBadge tone="emerald" label={`Cat: ${jobCategory}`} />
             <button
               type="button"
               onClick={() => setShowCaptionConfig((v) => !v)}
               className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-3 py-1 text-xs text-[#d1d5db] ring-1 ring-white/[0.1] hover:bg-white/[0.1] hover:text-white cursor-pointer"
             >
               <PencilSimple size={13} />
-              {showCaptionConfig ? "Close Prompt Editor" : "Edit Set & Caption Prompt"}
+              {showCaptionConfig ? "Close Picassy Editor" : "Edit Tag, Category & Prompt"}
             </button>
           </div>
           <p className="mt-1.5 font-mono-tech text-xs text-[#9ca3af] break-all">
@@ -426,8 +446,8 @@ export function GalleryScreen({
       {/* Expandable Set Name & Post-Image Caption Prompt Panel */}
       {showCaptionConfig && (
         <StudioPanel
-          eyebrow="POST-IMAGE PINTEREST CAPTION & DESCRIPTION PROMPT"
-          title="Configure Set Theme & Batch Caption Generator"
+          eyebrow="PICASSY SEO DATA & BATCH CAPTION PROMPT"
+          title="Configure Primary Tag, Category & Metadata Prompt"
         >
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -442,15 +462,42 @@ export function GalleryScreen({
                   className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-sm text-white ring-1 ring-white/[0.1]"
                 />
               </div>
-              <div className="sm:col-span-2 flex flex-col gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-amber-200/90">
-                  Prompt tạo Caption & Description (Chuẩn Pinterest / Trang ảnh)
+                  Tag chính (Primary Keyword)
+                </label>
+                <input
+                  type="text"
+                  value={primaryTagDraft}
+                  onChange={(e) => setPrimaryTagDraft(e.target.value)}
+                  className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-sm text-white ring-1 ring-white/[0.1]"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-emerald-200/90">
+                  Category (1 per Job)
+                </label>
+                <select
+                  value={categoryDraft}
+                  onChange={(e) => setCategoryDraft(e.target.value)}
+                  className="h-10 rounded-xl bg-[#0e1117] px-3 text-xs text-white ring-1 ring-white/[0.1]"
+                >
+                  {categoryOptions.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="sm:col-span-3 flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-amber-200/90">
+                  Custom Picassy Metadata Instructions
                 </label>
                 <input
                   type="text"
                   value={captionPromptDraft}
                   onChange={(e) => setCaptionPromptDraft(e.target.value)}
-                  placeholder="Instructions for Pin Title, Caption, SEO Description, and Hashtags..."
+                  placeholder="Instructions for Title (<=60), Description (<=160), and Alt Text (100-125)..."
                   className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-xs text-white ring-1 ring-white/[0.1]"
                 />
               </div>
@@ -582,14 +629,26 @@ export function GalleryScreen({
           .map((gen) => {
           const hasImage = Boolean(gen.image_file)
           const titleVal = titleDrafts[gen.id] ?? gen.title
-          const captionVal = captionDrafts[gen.id] ?? (gen.caption || gen.title)
           const descVal = descDrafts[gen.id] ?? gen.description
-          const tagsVal = tagsDrafts[gen.id] ?? (gen.hashtags || "")
+          const altVal = altDrafts[gen.id] ?? (gen.alt_text || "")
+          const kwLower = jobPrimaryTag.toLowerCase()
+          const titleOk =
+            titleVal.length > 0 &&
+            titleVal.length <= 60 &&
+            (!kwLower || titleVal.toLowerCase().startsWith(kwLower))
+          const descOk =
+            descVal.length > 0 &&
+            descVal.length <= 160 &&
+            !descVal.includes("#") &&
+            (!kwLower || descVal.toLowerCase().includes(kwLower))
+          const altOk =
+            altVal.length >= 100 &&
+            altVal.length <= 125 &&
+            (!kwLower || altVal.toLowerCase().includes(kwLower))
           const isDirty =
             titleVal !== (gen.title || "") ||
-            captionVal !== (gen.caption || gen.title || "") ||
             descVal !== (gen.description || "") ||
-            tagsVal !== (gen.hashtags || "")
+            altVal !== (gen.alt_text || "")
 
           return (
             <div
@@ -675,36 +734,42 @@ export function GalleryScreen({
                   </div>
                 )}
 
-                {/* Inline Editable Pin Title, Caption, Description & Hashtags */}
+                {/* Inline Editable Picassy SEO Fields: Title (<=60), Description (<=160), Alt Text (100-125) */}
                 {exportMode !== "none" ? (
                   <div className="mt-4 flex flex-col gap-2.5">
                     <div>
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <label className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
-                          Pin Title (
-                          {exportMode === "caption"
-                            ? gen.caption_file || `${String(gen.index_num).padStart(3, "0")}.txt`
-                            : gen.sidecar_file || "Sidecar JSON"}
-                          )
+                          Title ({titleVal.length}/60)
                         </label>
-                        {savingId === gen.id ? (
-                          <span className="font-mono-tech text-[10px] text-sky-300">
-                            Syncing…
-                          </span>
-                        ) : savedId === gen.id ? (
-                          <span className="font-mono-tech text-[10px] text-emerald-300">
-                            ✓ Saved & synced
-                          </span>
-                        ) : isDirty ? (
-                          <button
-                            type="button"
-                            onClick={() => handleSaveMeta(gen, true)}
-                            className="inline-flex items-center gap-1 font-mono-tech text-[10px] text-emerald-300 hover:underline cursor-pointer"
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "font-mono-tech text-[10px]",
+                              titleOk ? "text-emerald-300" : "text-amber-300"
+                            )}
                           >
-                            <FloppyDisk size={11} />
-                            Save now
-                          </button>
-                        ) : null}
+                            {titleOk ? "✓ Prefix+Len" : "Check Prefix/60"}
+                          </span>
+                          {savingId === gen.id ? (
+                            <span className="font-mono-tech text-[10px] text-sky-300">
+                              Syncing…
+                            </span>
+                          ) : savedId === gen.id ? (
+                            <span className="font-mono-tech text-[10px] text-emerald-300">
+                              ✓ Saved
+                            </span>
+                          ) : isDirty ? (
+                            <button
+                              type="button"
+                              onClick={() => handleSaveMeta(gen, true)}
+                              className="inline-flex items-center gap-1 font-mono-tech text-[10px] text-emerald-300 hover:underline cursor-pointer"
+                            >
+                              <FloppyDisk size={11} />
+                              Save
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                       <input
                         type="text"
@@ -716,36 +781,27 @@ export function GalleryScreen({
                           }))
                         }
                         onBlur={() => handleSaveMeta(gen)}
-                        placeholder="Catchy Pinterest Pin title..."
+                        placeholder={`Starts with "${jobPrimaryTag}" (<=60 chars)...`}
                         className="mt-1 h-9 w-full rounded-xl bg-white/[0.03] px-3 text-xs font-medium text-white ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
                       />
                     </div>
 
                     <div>
-                      <label className="font-mono-tech text-[10px] uppercase tracking-wider text-amber-200/80">
-                        Social Caption / Hook
-                      </label>
-                      <input
-                        type="text"
-                        value={captionVal}
-                        onChange={(e) =>
-                          setCaptionDrafts((prev) => ({
-                            ...prev,
-                            [gen.id]: e.target.value,
-                          }))
-                        }
-                        onBlur={() => handleSaveMeta(gen)}
-                        placeholder="Short engaging social caption hook..."
-                        className="mt-1 h-8 w-full rounded-xl bg-white/[0.025] px-3 text-xs text-amber-100 ring-1 ring-white/[0.07] outline-none focus:ring-2 focus:ring-amber-400/30"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
-                        Pinterest SEO Description & Hashtags
-                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
+                          Description ({descVal.length}/160)
+                        </label>
+                        <span
+                          className={cn(
+                            "font-mono-tech text-[10px]",
+                            descOk ? "text-emerald-300" : "text-amber-300"
+                          )}
+                        >
+                          {descOk ? "✓ Clean Prose" : "Check Keyword/160"}
+                        </span>
+                      </div>
                       <textarea
-                        rows={3}
+                        rows={2}
                         value={descVal}
                         onChange={(e) =>
                           setDescDrafts((prev) => ({
@@ -754,14 +810,43 @@ export function GalleryScreen({
                           }))
                         }
                         onBlur={() => handleSaveMeta(gen)}
-                        placeholder="Enter SEO description & hashtags..."
-                        className="mt-1 w-full rounded-xl bg-white/[0.03] p-3 text-xs text-[#d1d5db] ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
+                        placeholder={`Complete sentence containing "${jobPrimaryTag}" (<=160 chars, no #)...`}
+                        className="mt-1 w-full rounded-xl bg-white/[0.03] p-2.5 text-xs text-[#d1d5db] ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="font-mono-tech text-[10px] uppercase tracking-wider text-sky-200/90">
+                          Alt Text ({altVal.length}/100–125)
+                        </label>
+                        <span
+                          className={cn(
+                            "font-mono-tech text-[10px]",
+                            altOk ? "text-emerald-300" : "text-rose-300"
+                          )}
+                        >
+                          {altOk ? "✓ 100–125" : `${altVal.length} chars (need 100–125)`}
+                        </span>
+                      </div>
+                      <textarea
+                        rows={2}
+                        value={altVal}
+                        onChange={(e) =>
+                          setAltDrafts((prev) => ({
+                            ...prev,
+                            [gen.id]: e.target.value,
+                          }))
+                        }
+                        onBlur={() => handleSaveMeta(gen)}
+                        placeholder="Truthful screen-reader visual description (100-125 chars)..."
+                        className="mt-1 w-full rounded-xl bg-white/[0.025] p-2.5 text-xs text-sky-100 ring-1 ring-white/[0.07] outline-none focus:ring-2 focus:ring-sky-400/30"
                       />
                     </div>
                   </div>
                 ) : (
                   <p className="mt-3 text-[11px] text-[#646b78]">
-                    Image-only export mode active. Switch to "Xuất Caption" or "Xuất JSON" above to edit & export Pin captions.
+                    Image-only export mode active. Switch to "Xuất Caption" or "Xuất JSON" above to edit &amp; export Picassy metadata.
                   </p>
                 )}
               </div>
@@ -773,17 +858,17 @@ export function GalleryScreen({
                     type="button"
                     onClick={() => handleCopyText(gen.id, buildPinCopyBlock(gen))}
                     className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2.5 py-1 text-[11px] font-medium text-amber-200 ring-1 ring-amber-400/25 hover:bg-amber-400/25 cursor-pointer"
-                    title="Copy Title + Caption + Description + Hashtags for Pinterest upload"
+                    title="Copy Picassy Tag, Category, Title, Description, Alt text"
                   >
                     {copiedId === gen.id ? (
                       <>
                         <Check size={12} weight="bold" className="text-emerald-300" />
-                        Copied Pin
+                        Copied SEO
                       </>
                     ) : (
                       <>
                         <Copy size={12} weight="light" />
-                        Copy Pin
+                        Copy SEO
                       </>
                     )}
                   </button>
@@ -905,7 +990,7 @@ export function GalleryScreen({
                           : "text-[#9ca3af] hover:text-white"
                       )}
                     >
-                      Pin Caption (.txt)
+                      Picassy TXT (.txt)
                     </button>
                     <button
                       type="button"

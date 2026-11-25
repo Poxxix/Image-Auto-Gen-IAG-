@@ -17,10 +17,12 @@ import requests
 
 from config import (
     AI_ENGINES,
-    CDP_ENDPOINT,
+    CDP_HOST,
     CDP_PORT,
-    CHROME_AI_MASTER_DIR,
+    DEFAULT_CDP_SLOTS,
     get_chrome_executable_path,
+    get_slot_profile_dir,
+    normalize_cdp_slots,
 )
 from modules.app_logging import logger
 from modules.reference_sources.image_utils import (
@@ -42,25 +44,52 @@ class ReferenceTooSimilarError(RuntimeError):
         self.similarity = similarity or {}
 
 
-_LAST_CDP_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+_LAST_CDP_CACHE: Dict[int, Dict[str, Any]] = {}
 _CDP_CACHE_LOCK = threading.Lock()
 
 
-def check_cdp_status(force: bool = False) -> Dict[str, Any]:
+def _resolve_slots_from_settings(slots: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    if slots is not None:
+        return normalize_cdp_slots(slots)
+    try:
+        from database.db_manager import db
+
+        settings = db.get_settings(include_secrets=False)
+        return normalize_cdp_slots(settings.get("cdp_slots"))
+    except Exception:
+        return [dict(s) for s in DEFAULT_CDP_SLOTS]
+
+
+def _get_slot_cfg(slot_id: int = 1, slots: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    resolved = _resolve_slots_from_settings(slots)
+    for item in resolved:
+        if int(item["slot_id"]) == int(slot_id):
+            return item
+    return resolved[0]
+
+
+def check_cdp_status(
+    force: bool = False,
+    cdp_port: int = CDP_PORT,
+    slot_id: int = 1,
+) -> Dict[str, Any]:
     """
-    Checks if the Chrome AI Master browser is running on CDP_PORT AND has at least
-    one active 'page' target (avoiding macOS windowless Dock state where 0 windows exist).
+    Checks if Chrome CDP is running on `cdp_port` AND has at least one active 'page'
+    target (avoiding macOS windowless Dock state where 0 windows exist).
     """
+    port = int(cdp_port or CDP_PORT)
+    endpoint = f"http://{CDP_HOST}:{port}"
     now = time.time()
     with _CDP_CACHE_LOCK:
-        if not force and _LAST_CDP_CACHE["data"] is not None and (now - _LAST_CDP_CACHE["ts"]) < 4.0:
-            return dict(_LAST_CDP_CACHE["data"])
+        cached = _LAST_CDP_CACHE.get(port)
+        if not force and cached and cached.get("data") is not None and (now - cached["ts"]) < 3.5:
+            return dict(cached["data"])
 
     try:
-        resp = requests.get(f"{CDP_ENDPOINT}/json/version", timeout=0.8)
+        resp = requests.get(f"{endpoint}/json/version", timeout=0.65)
         if resp.status_code == 200:
             data = resp.json()
-            tabs_resp = requests.get(f"{CDP_ENDPOINT}/json/list", timeout=0.8)
+            tabs_resp = requests.get(f"{endpoint}/json/list", timeout=0.65)
             tabs = tabs_resp.json() if tabs_resp.status_code == 200 else []
             page_tabs = [
                 t for t in tabs if isinstance(t, dict) and t.get("type") == "page"
@@ -72,42 +101,102 @@ def check_cdp_status(force: bool = False) -> Dict[str, Any]:
 
             has_window = len(page_tabs) > 0
             result = {
+                "slot_id": int(slot_id),
+                "port": port,
                 "connected": has_window,
                 "online": has_window,
                 "windowless": not has_window,
                 "page_count": len(page_tabs),
                 "browser": data.get("Browser", "Google Chrome"),
                 "webSocketDebuggerUrl": data.get("webSocketDebuggerUrl", ""),
-                "endpoint": CDP_ENDPOINT,
+                "endpoint": endpoint,
                 "open_engines": open_engines,
             }
             with _CDP_CACHE_LOCK:
-                _LAST_CDP_CACHE["ts"] = now
-                _LAST_CDP_CACHE["data"] = result
+                _LAST_CDP_CACHE[port] = {"ts": now, "data": result}
             return dict(result)
     except Exception:
         pass
 
     offline = {
+        "slot_id": int(slot_id),
+        "port": port,
         "connected": False,
         "online": False,
         "windowless": False,
         "page_count": 0,
         "browser": None,
-        "endpoint": CDP_ENDPOINT,
+        "endpoint": endpoint,
         "open_engines": [],
     }
     with _CDP_CACHE_LOCK:
-        _LAST_CDP_CACHE["ts"] = now
-        _LAST_CDP_CACHE["data"] = offline
+        _LAST_CDP_CACHE[port] = {"ts": now, "data": offline}
     return dict(offline)
 
 
-def _kill_port_9222_process() -> None:
-    """Terminates a zombie/windowless Chrome process listening on CDP_PORT."""
+def list_cdp_slots_status(
+    slots: Optional[List[Dict[str, Any]]] = None,
+    force: bool = False,
+) -> List[Dict[str, Any]]:
+    resolved = _resolve_slots_from_settings(slots)
+    out: List[Dict[str, Any]] = []
+    for slot in resolved:
+        sid = int(slot["slot_id"])
+        port = int(slot["port"])
+        st = check_cdp_status(force=force, cdp_port=port, slot_id=sid)
+        out.append(
+            {
+                **slot,
+                **st,
+                "profile_dir": str(get_slot_profile_dir(slot)),
+            }
+        )
+    return out
+
+
+def get_preferred_online_cdp_port(
+    slots: Optional[List[Dict[str, Any]]] = None,
+    preferred_slot: int = 0,
+) -> Optional[int]:
+    statuses = list_cdp_slots_status(slots=slots, force=False)
+    if preferred_slot:
+        for st in statuses:
+            if int(st["slot_id"]) == int(preferred_slot) and st.get("connected"):
+                return int(st["port"])
+    for st in statuses:
+        if st.get("enabled", True) and st.get("connected"):
+            return int(st["port"])
+    for st in statuses:
+        if st.get("connected"):
+            return int(st["port"])
+    return None
+
+
+def _kill_port_process(cdp_port: int = CDP_PORT) -> None:
+    """Terminates ONLY the Chrome process listening on `cdp_port` without disturbing other slots."""
+    port = int(cdp_port or CDP_PORT)
     try:
+        if os.name == "nt":
+            out = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            pids = [int(x.strip()) for x in out.stdout.splitlines() if x.strip().isdigit()]
+            for pid in pids:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=4)
+            if pids:
+                time.sleep(1.0)
+            return
+
         out = subprocess.run(
-            ["lsof", "-t", f"-iTCP:{CDP_PORT}", "-sTCP:LISTEN"],
+            ["lsof", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             timeout=3,
@@ -124,34 +213,47 @@ def _kill_port_9222_process() -> None:
         pass
 
 
-def launch_chrome_ai_master(
+def _kill_port_9222_process() -> None:
+    _kill_port_process(CDP_PORT)
+
+
+def launch_chrome_slot(
+    slot_id: int = 1,
     engine: str = "gemini",
     force_restart: bool = False,
+    cdp_port: Optional[int] = None,
+    profile_dir: Optional[Path] = None,
+    single_tab: bool = True,
 ) -> Dict[str, Any]:
     """
-    Launches Chromium with `--remote-debugging-port=9222` and dedicated `chrome_ai_master` profile.
-    If Chrome on :9222 is in a macOS windowless state (0 tabs) or `force_restart=True`,
-    cleanly restarts the :9222 process so a real BrowserContext and window exist.
+    Launches Chromium for a dedicated slot (`slot_id` 1..4) with its own `--remote-debugging-port`
+    and `--user-data-dir`, opening ONLY 1 active tab + 16 GB RAM cache/throttling guards.
     """
-    status = check_cdp_status(force=True)
+    slot_cfg = _get_slot_cfg(slot_id)
+    port = int(cdp_port or slot_cfg["port"] or CDP_PORT)
+    prof = Path(profile_dir) if profile_dir else get_slot_profile_dir(slot_cfg)
+
+    status = check_cdp_status(force=True, cdp_port=port, slot_id=slot_id)
     if status["connected"] and not force_restart:
         return {
             "launched": True,
             "success": True,
             "already_running": True,
-            "message": f"AI Master Browser is connected on port {CDP_PORT} ({status['page_count']} tab(s) open).",
+            "slot_id": int(slot_id),
+            "port": port,
+            "message": f"Slot #{slot_id} (:{port}) is connected ({status['page_count']} tab(s) open).",
             "status": status,
         }
 
     if status.get("windowless") or force_restart:
-        logger.info("Restarting windowless/stale Chrome on port %s...", CDP_PORT)
-        _kill_port_9222_process()
+        logger.info("Restarting Chrome Slot #%s on port %s...", slot_id, port)
+        _kill_port_process(port)
 
     chrome_bin = get_chrome_executable_path()
-    CHROME_AI_MASTER_DIR.mkdir(parents=True, exist_ok=True)
+    prof.mkdir(parents=True, exist_ok=True)
 
     for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-        lock_file = CHROME_AI_MASTER_DIR / lock_name
+        lock_file = prof / lock_name
         if lock_file.exists() or lock_file.is_symlink():
             try:
                 lock_file.unlink()
@@ -159,16 +261,21 @@ def launch_chrome_ai_master(
                 pass
 
     primary_url = AI_ENGINES.get(engine.lower(), AI_ENGINES["gemini"])["url"]
-    other_urls = [info["url"] for info in AI_ENGINES.values() if info["url"] != primary_url]
+    startup_urls = [primary_url]
+    if not single_tab:
+        startup_urls.extend(info["url"] for info in AI_ENGINES.values() if info["url"] != primary_url)
 
     cmd = [
         chrome_bin,
-        f"--remote-debugging-port={CDP_PORT}",
-        f"--user-data-dir={str(CHROME_AI_MASTER_DIR)}",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={str(prof)}",
         "--no-first-run",
         "--no-default-browser-check",
-        primary_url,
-        *other_urls,
+        "--disk-cache-size=52428800",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        *startup_urls,
     ]
 
     try:
@@ -180,16 +287,18 @@ def launch_chrome_ai_master(
         )
         for _ in range(16):
             time.sleep(0.5)
-            status = check_cdp_status(force=True)
+            status = check_cdp_status(force=True, cdp_port=port, slot_id=slot_id)
             if status["connected"]:
                 break
         return {
             "launched": True,
             "success": True,
             "already_running": False,
+            "slot_id": int(slot_id),
+            "port": port,
             "chrome_binary": chrome_bin,
-            "profile_dir": str(CHROME_AI_MASTER_DIR),
-            "message": f"Launched AI Master Browser on port {CDP_PORT}.",
+            "profile_dir": str(prof),
+            "message": f"Launched Chrome Slot #{slot_id} on port :{port}.",
             "status": status,
         }
     except Exception as exc:
@@ -197,10 +306,20 @@ def launch_chrome_ai_master(
             "launched": False,
             "success": False,
             "already_running": False,
+            "slot_id": int(slot_id),
+            "port": port,
             "chrome_binary": chrome_bin,
-            "message": f"Failed to launch Chrome at '{chrome_bin}': {exc}",
+            "message": f"Failed to launch Chrome Slot #{slot_id} (:{port}) at '{chrome_bin}': {exc}",
             "status": status,
         }
+
+
+def launch_chrome_ai_master(
+    engine: str = "gemini",
+    force_restart: bool = False,
+    slot_id: int = 1,
+) -> Dict[str, Any]:
+    return launch_chrome_slot(slot_id=slot_id, engine=engine, force_restart=force_restart)
 
 
 def _find_or_open_engine_page(
@@ -328,7 +447,12 @@ def _find_chat_input(page: Any) -> Any:
     return None
 
 
-def _ensure_authenticated(page: Any, engine: str) -> None:
+def _ensure_authenticated(
+    page: Any,
+    engine: str,
+    slot_id: int = 1,
+    cdp_port: int = CDP_PORT,
+) -> None:
     label = AI_ENGINES.get(engine, AI_ENGINES["gemini"])["label"]
     url_lower = (page.url or "").lower()
     if any(
@@ -336,8 +460,8 @@ def _ensure_authenticated(page: Any, engine: str) -> None:
         for x in ("accounts.google.com", "auth0.com", "login", "/auth/", "signin")
     ):
         raise ProviderAuthError(
-            f"{label} redirected to sign-in ({page.url}). "
-            f"Sign into {label} in the AI Master Browser (:9222) and click Resume."
+            f"{label} redirected to sign-in on Slot #{slot_id} (:{cdp_port}) ({page.url}). "
+            f"Sign into {label} in Chrome Slot #{slot_id} (:{cdp_port}) and click Resume."
         )
 
     for _ in range(10):
@@ -346,8 +470,8 @@ def _ensure_authenticated(page: Any, engine: str) -> None:
         time.sleep(1.0)
 
     raise ProviderAuthError(
-        f"No active chat input found on {label} ({page.url}). "
-        f"Please sign into {label} in the AI Master Browser (:9222) and click Resume."
+        f"No active chat input found on {label} Slot #{slot_id} (:{cdp_port}) ({page.url}). "
+        f"Please sign into {label} in Chrome Slot #{slot_id} (:{cdp_port}) and click Resume."
     )
 
 
@@ -1417,6 +1541,10 @@ def _collect_metadata_on_open_page(
     metadata_language: str,
     index_num: int,
     caption_prompt: str = "",
+    primary_tag: str = "",
+    category: str = "",
+    available_categories: Optional[List[str]] = None,
+    include_visual_context: bool = False,
     timeout_sec: float = 18.0,
     should_abort: Optional[Callable[[], bool]] = None,
     heartbeat_fn: Optional[Callable[[], None]] = None,
@@ -1445,6 +1573,10 @@ def _collect_metadata_on_open_page(
             metadata_language=metadata_language,
             index_num=index_num,
             caption_prompt=caption_prompt,
+            primary_tag=primary_tag,
+            category=category,
+            available_categories=available_categories,
+            include_visual_context=include_visual_context,
         )
         _send_chat_message(page, prompt)
         if heartbeat_fn:
@@ -1515,16 +1647,21 @@ def generate_image_via_cdp(
     heartbeat_fn: Optional[Callable[[], None]] = None,
     recycle_tab: bool = False,
     metadata_request: Optional[Dict[str, Any]] = None,
+    cdp_port: Optional[int] = None,
+    slot_id: int = 1,
 ) -> Dict[str, Any]:
     """
-    Generates 1 image via Chrome CDP (:9222) on `gemini` | `chatgpt` | `grok`,
+    Generates 1 image via Chrome CDP on the slot's `cdp_port` (`:9222..:9225`),
     using an isolated New Chat per shot (when `new_chat=True`), real Network + DOM
     state monitoring instead of fixed wait guesses, and immediate input-clone rejection.
     """
     from playwright.sync_api import sync_playwright
 
+    target_port = int(cdp_port or CDP_PORT)
+    target_endpoint = f"http://{CDP_HOST}:{target_port}"
+
     def _log(msg: str) -> None:
-        logger.info("[CDP:%s] %s", engine.upper(), msg)
+        logger.info("[CDP:%s#%s:%s] %s", engine.upper(), slot_id, target_port, msg)
         if log_fn:
             log_fn(msg)
 
@@ -1532,16 +1669,23 @@ def generate_image_via_cdp(
         if heartbeat_fn:
             heartbeat_fn()
 
-    status = check_cdp_status(force=True)
+    status = check_cdp_status(force=True, cdp_port=target_port, slot_id=slot_id)
     _hb()
     if not status["connected"]:
-        _log("Launching / restoring AI Master Browser window on :9222...")
-        launch_res = launch_chrome_ai_master(engine=engine, force_restart=bool(status.get("windowless")))
-        status = launch_res.get("status") or check_cdp_status(force=True)
+        _log(f"Launching / restoring Chrome Slot #{slot_id} (:{target_port})...")
+        launch_res = launch_chrome_slot(
+            slot_id=slot_id,
+            engine=engine,
+            force_restart=bool(status.get("windowless")),
+            cdp_port=target_port,
+        )
+        status = launch_res.get("status") or check_cdp_status(
+            force=True, cdp_port=target_port, slot_id=slot_id
+        )
         if not status["connected"]:
             raise ProviderAuthError(
-                f"Chrome AI Master Browser is not running on port {CDP_PORT}. "
-                "Click 'Launch Browser (:9222)' in Settings and sign into your AI account."
+                f"Chrome Slot #{slot_id} is offline on port :{target_port}. "
+                f"Click 'Launch' for Slot #{slot_id} in Settings and sign into your AI account."
             )
 
     ref_info: Optional[Dict[str, Any]] = None
@@ -1555,20 +1699,25 @@ def generate_image_via_cdp(
 
     with sync_playwright() as p:
         try:
-            browser = p.chromium.connect_over_cdp(CDP_ENDPOINT, timeout=12000)
+            browser = p.chromium.connect_over_cdp(target_endpoint, timeout=12000)
         except Exception as conn_err:
             if "setDownloadBehavior" in str(conn_err) or "context management" in str(conn_err):
-                _log("Detected windowless Chrome state; reopening Chrome (:9222) window...")
-                launch_chrome_ai_master(engine=engine, force_restart=True)
+                _log(f"Detected windowless Chrome state on Slot #{slot_id}; reopening :{target_port}...")
+                launch_chrome_slot(
+                    slot_id=slot_id,
+                    engine=engine,
+                    force_restart=True,
+                    cdp_port=target_port,
+                )
                 time.sleep(1.5)
-                browser = p.chromium.connect_over_cdp(CDP_ENDPOINT, timeout=12000)
+                browser = p.chromium.connect_over_cdp(target_endpoint, timeout=12000)
             else:
                 raise
         _hb()
 
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         if recycle_tab:
-            _log(f"Recycling {engine.capitalize()} browser tab to keep Chrome memory lean...")
+            _log(f"Recycling {engine.capitalize()} browser tab on Slot #{slot_id} to keep Chrome memory lean...")
         page = _find_or_open_engine_page(context, engine, recycle=recycle_tab)
         _hb()
         try:
@@ -1576,11 +1725,11 @@ def generate_image_via_cdp(
         except Exception:
             pass
 
-        _ensure_authenticated(page, engine)
+        _ensure_authenticated(page, engine, slot_id=slot_id, cdp_port=target_port)
         _hb()
         if new_chat:
             page = _start_fresh_chat(page, engine, _log)
-            _ensure_authenticated(page, engine)
+            _ensure_authenticated(page, engine, slot_id=slot_id, cdp_port=target_port)
             _hb()
 
         if reference_path and os.path.exists(reference_path):

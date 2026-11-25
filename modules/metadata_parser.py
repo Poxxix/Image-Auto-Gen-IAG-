@@ -29,23 +29,287 @@ def build_metadata_prompt(
     metadata_language: str = "English",
     index_num: int = 1,
     caption_prompt: str = "",
+    primary_tag: str = "",
+    category: str = "",
+    available_categories: Optional[List[str]] = None,
+    include_visual_context: bool = True,
 ) -> str:
+    keyword = (primary_tag or theme).strip()
     custom_instruction = (caption_prompt or DEFAULT_CAPTION_PROMPT).strip()
+    context_note = f" Visual context: {prompt_final}." if (include_visual_context and prompt_final) else ""
+    cat_line = ""
+    if not category and available_categories:
+        cats_joined = ", ".join(available_categories)
+        cat_line = f'  "category": "Pick exact 1 item from: {cats_joined}",\n'
+
     return (
-        f"Based on the image you just created for theme \"{theme}\" "
-        f"(Variation #{index_num}, visual context: {prompt_final}), "
-        f"{custom_instruction} "
-        f"Write strictly in {metadata_language}. "
-        "IMPORTANT: Do NOT generate or edit any image in this turn — reply with text ONLY as a single JSON object:\n"
+        f"Write natural, grammatically sound SEO image metadata in {metadata_language} for the attached/generated image. "
+        f'Core primary keyword (Tag chinh — keep EXACT spelling & spacing): "{keyword}". '
+        f"{custom_instruction}{context_note} "
+        "STRICT RULES (never keyword-stuff; prioritize natural grammar):\n"
+        f'1. "title": MAX 60 characters total. MUST start directly with exact keyword "{keyword}". Complete meaningful phrase or sentence.\n'
+        f'2. "description": MAX 160 characters total. Complete, engaging sentence(s) providing visual context that naturally includes exact "{keyword}". NO hashtags (#).\n'
+        f'3. "alt_text": STRICTLY 100 to 125 characters (count carefully!). Screen-reader & SEO narrative faithfully describing what is actually visible in the image, naturally containing exact "{keyword}". Correct grammar, no robotic keyword list, no hashtags.\n'
+        "IMPORTANT: Reply with text ONLY (do NOT generate or edit any image) as a single JSON object:\n"
         "```json\n"
         "{\n"
-        '  "title": "Catchy aesthetic Pinterest Pin Title (4 to 10 words)",\n'
-        '  "caption": "Engaging 1-sentence social hook caption for Pinterest / Instagram",\n'
-        '  "description": "2 to 3 natural SEO-rich sentences describing the visual aesthetic, details, mood, and styling inspiration.",\n'
-        '  "hashtags": "#tag1 #tag2 #tag3 #tag4 #tag5 #tag6"\n'
+        f'  "title": "{keyword} ...",\n'
+        f'  "description": "Natural 1-2 sentence visual description including {keyword} (<=160 chars, no #tags).",\n'
+        f'{cat_line}'
+        f'  "alt_text": "Faithful 100-125 character visual description naturally including {keyword}."\n'
         "}\n"
         "```"
     )
+
+
+def build_picassy_repair_prompt(
+    *,
+    primary_tag: str,
+    metadata_language: str,
+    title: str,
+    description: str,
+    alt_text: str,
+    issues: List[str],
+) -> str:
+    return (
+        f"Fix the metadata JSON below strictly in {metadata_language} while keeping natural human grammar and zero keyword stuffing.\n"
+        f'Exact required keyword: "{primary_tag}"\n'
+        f"Current draft:\n"
+        f'- title ({len(title)} chars): "{title}"\n'
+        f'- description ({len(description)} chars): "{description}"\n'
+        f'- alt_text ({len(alt_text)} chars): "{alt_text}"\n'
+        f"Issues to fix: {'; '.join(issues)}\n"
+        "Rules:\n"
+        f'- title: <= 60 chars, MUST start with exact "{primary_tag}".\n'
+        f'- description: <= 160 chars, complete sentence containing exact "{primary_tag}", no hashtags.\n'
+        f'- alt_text: STRICTLY 100 to 125 characters inclusive, natural visual narrative containing exact "{primary_tag}", no hashtags.\n'
+        "Reply ONLY with valid JSON containing keys title, description, alt_text."
+    )
+
+
+def _strip_hashtags(text: str) -> str:
+    cleaned = re.sub(r"(?:^|\s)#[^\s#]+", " ", text or "")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned
+
+
+def _trim_grammatical_phrase(text: str, max_len: int, keep_terminal_punct: bool = False) -> str:
+    s = re.sub(r"\s+", " ", (text or "").strip())
+    if len(s) <= max_len:
+        if keep_terminal_punct and s and s[-1] not in ".!?":
+            if len(s) + 1 <= max_len:
+                return s + "."
+        return s
+
+    target = max_len - (1 if keep_terminal_punct else 0)
+    cut = s[:target].rstrip()
+    # Try last complete sentence first
+    last_sent = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if last_sent >= max(35, int(target * 0.55)):
+        res = cut[: last_sent + 1].strip()
+        return res
+
+    # Fallback: trim to last space / clause separator
+    sp = cut.rfind(" ")
+    if sp > 12:
+        cut = cut[:sp].rstrip(" ,;:-")
+    dangling = {
+        "with", "and", "or", "in", "on", "at", "by", "for", "of", "to", "from",
+        "the", "a", "an", "that", "which", "featuring", "showing", "while",
+        "và", "với", "của", "trong", "trên", "cho", "tại", "từ", "những", "các",
+    }
+    words = cut.split()
+    while len(words) > 2 and words[-1].lower().strip(",;:-") in dangling:
+        words.pop()
+    res = " ".join(words).rstrip(" ,;:-")
+    if keep_terminal_punct and res and res[-1] not in ".!?":
+        res = f"{res}."
+    return res[:max_len].strip()
+
+
+def _ensure_keyword_casing(text: str, keyword: str) -> str:
+    if not keyword:
+        return text
+    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+    if pattern.search(text):
+        return pattern.sub(lambda _: keyword, text, count=1)
+    return text
+
+
+def validate_picassy_metadata(
+    meta: Dict[str, Any],
+    primary_tag: str,
+) -> List[str]:
+    kw = (primary_tag or "").strip()
+    title = (meta.get("title") or "").strip()
+    desc = (meta.get("description") or "").strip()
+    alt = (meta.get("alt_text") or "").strip()
+    issues: List[str] = []
+
+    if not title or len(title) > 60:
+        issues.append(f"title must be 1..60 chars (got {len(title)})")
+    if kw and not title.lower().startswith(kw.lower()):
+        issues.append(f'title must start with exact "{kw}"')
+
+    if not desc or len(desc) > 160:
+        issues.append(f"description must be 1..160 chars (got {len(desc)})")
+    if kw and kw.lower() not in desc.lower():
+        issues.append(f'description must include exact "{kw}"')
+    if "#" in desc:
+        issues.append("description must not contain hashtags")
+
+    if len(alt) < 100 or len(alt) > 125:
+        issues.append(f"alt_text must be strictly 100..125 chars (got {len(alt)})")
+    if kw and kw.lower() not in alt.lower():
+        issues.append(f'alt_text must include exact "{kw}"')
+    if "#" in alt:
+        issues.append("alt_text must not contain hashtags")
+    return issues
+
+
+def fit_picassy_metadata(
+    raw_meta: Dict[str, Any],
+    *,
+    primary_tag: str,
+    theme: str = "",
+    metadata_language: str = "English",
+    visual_hints: Optional[Dict[str, str]] = None,
+    category: str = "",
+    available_categories: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """
+    Guarantees Picassy SEO schema compliance cleanly without mid-word truncation or hashtag stuffing:
+    - title <= 60 chars, starts with exact `primary_tag`
+    - description <= 160 chars, natural complete sentence(s) containing `primary_tag`
+    - alt_text strictly 100..125 chars, truthful visual sentence containing `primary_tag`
+    """
+    kw = (primary_tag or theme or "Artwork").strip()
+    lang_low = (metadata_language or "English").strip().lower()
+    is_vi = lang_low in ("vietnamese", "tiếng việt", "vi")
+    hints = visual_hints or {}
+
+    # 1. Title (<= 60 chars, MUST start with exact primary_tag)
+    raw_title = _strip_hashtags(str(raw_meta.get("title") or "")).strip(' "\'')
+    raw_title = _ensure_keyword_casing(raw_title, kw)
+    if not raw_title or not raw_title.lower().startswith(kw.lower()):
+        tail = re.sub(re.escape(kw), "", raw_title, flags=re.IGNORECASE).strip(" :-–—|.,")
+        if tail and len(f"{kw} {tail}") <= 60:
+            raw_title = f"{kw} {tail}"
+        elif tail:
+            raw_title = f"{kw}: {tail}"
+        else:
+            default_tail = "với ánh sáng tinh tế" if is_vi else "in Soft Natural Light"
+            raw_title = f"{kw} {default_tail}"
+    if len(kw) >= 60:
+        title = kw[:60].rstrip()
+    else:
+        title = _trim_grammatical_phrase(raw_title, 60, keep_terminal_punct=False)
+        if not title.lower().startswith(kw.lower()):
+            title = kw[:60]
+
+    # 2. Description (<= 160 chars, natural sentence(s) containing exact primary_tag, zero hashtags)
+    raw_desc = _strip_hashtags(str(raw_meta.get("description") or "")).strip(' "\'')
+    raw_desc = _ensure_keyword_casing(raw_desc, kw)
+    if not raw_desc:
+        angle_h = hints.get("camera_angle") or ("góc nhìn tự nhiên" if is_vi else "balanced framing")
+        light_h = hints.get("lighting") or ("ánh sáng hài hòa" if is_vi else "soft natural light")
+        raw_desc = (
+            f"Hình ảnh {kw} được thể hiện tự nhiên với {angle_h.lower()} và {light_h.lower()}."
+            if is_vi
+            else f"A captivating {kw} composition shaped with {angle_h.lower()} and {light_h.lower()}."
+        )
+    elif kw.lower() not in raw_desc.lower():
+        prefix_lead = f"Khám phá {kw}: " if is_vi else f"Featuring {kw}, "
+        body_clean = raw_desc[0].lower() + raw_desc[1:] if (not is_vi and len(raw_desc) > 1 and raw_desc[:2].istitle()) else raw_desc
+        raw_desc = f"{prefix_lead}{body_clean}"
+    desc = _trim_grammatical_phrase(raw_desc, 160, keep_terminal_punct=True)
+    if kw.lower() not in desc.lower():
+        desc = _trim_grammatical_phrase(
+            f"{kw} portrayed with refined visual balance and authentic atmosphere.",
+            160,
+            keep_terminal_punct=True,
+        )
+
+    # 3. Alt text (STRICTLY 100..125 chars, natural narrative describing real image, contains exact primary_tag)
+    raw_alt = _strip_hashtags(str(raw_meta.get("alt_text") or "")).strip(' "\'')
+    raw_alt = _ensure_keyword_casing(raw_alt, kw)
+    if not raw_alt:
+        angle_h = hints.get("camera_angle") or ("góc nhìn cân đối" if is_vi else "clear balanced framing")
+        light_h = hints.get("lighting") or ("ánh sáng tự nhiên ấm áp" if is_vi else "soft natural light")
+        atmos_h = hints.get("atmosphere") or ("bối cảnh hài hòa giàu chi tiết" if is_vi else "a calm, detailed setting")
+        raw_alt = (
+            f"Bức ảnh ghi lại {kw} ở {angle_h.lower()}, nổi bật dưới {light_h.lower()} giữa {atmos_h.lower()}."
+            if is_vi
+            else f"View of {kw} captured with {angle_h.lower()}, illuminated by {light_h.lower()} in {atmos_h.lower()}."
+        )
+    elif kw.lower() not in raw_alt.lower():
+        raw_alt = (
+            f"Hình ảnh {kw}: {raw_alt}"
+            if is_vi
+            else f"{kw} shown as {raw_alt[0].lower() + raw_alt[1:] if len(raw_alt) > 1 else raw_alt}"
+        )
+
+    alt = _trim_grammatical_phrase(raw_alt, 125, keep_terminal_punct=True)
+
+    # If alt_text < 100 chars, naturally enrich with descriptive visual phrasing until 100..125
+    vi_clauses = [
+        "với đường nét sắc sảo và màu sắc hài hòa",
+        "mang lại cảm giác chân thực, giàu chiều sâu",
+        "cân đối nhẹ nhàng trong từng chi tiết ánh sáng",
+        "tạo nên khung hình tự nhiên và rõ nét",
+    ]
+    en_clauses = [
+        "with crisp visual texture and balanced natural tones",
+        "highlighting gentle shadows and clear foreground detail",
+        "composed harmoniously in natural daylight and calm depth",
+        "offering a clear view of texture, form, and mood",
+    ]
+    clauses = vi_clauses if is_vi else en_clauses
+    for clause in clauses:
+        if 100 <= len(alt) <= 125:
+            break
+        if len(alt) >= 100:
+            break
+        base_no_dot = alt.rstrip(".!? ")
+        candidate = f"{base_no_dot}, {clause}."
+        if len(candidate) <= 125:
+            alt = candidate
+        else:
+            # Find shorter clause or gentle trim inside 100..125
+            fitted = _trim_grammatical_phrase(candidate, 125, keep_terminal_punct=True)
+            if len(fitted) >= 100:
+                alt = fitted
+                break
+            else:
+                alt = candidate[:125]
+                alt = _trim_grammatical_phrase(alt, 125, keep_terminal_punct=True)
+
+    if len(alt) < 100:
+        pad_phrase = "trong ánh sáng dịu nhẹ" if is_vi else "under soft natural light"
+        base_no_dot = alt.rstrip(".!? ")
+        cand = f"{base_no_dot} {pad_phrase}."
+        alt = cand if len(cand) <= 125 else _trim_grammatical_phrase(cand, 125, keep_terminal_punct=True)
+
+    # Exact category validation
+    resolved_cat = (category or "").strip()
+    if not resolved_cat and available_categories:
+        ai_cat = str(raw_meta.get("category") or "").strip()
+        for c in available_categories:
+            if c.lower() == ai_cat.lower():
+                resolved_cat = c
+                break
+
+    out: Dict[str, str] = {
+        "primary_tag": kw,
+        "title": title,
+        "caption": title,
+        "description": desc,
+        "alt_text": alt,
+        "hashtags": "",
+    }
+    if resolved_cat:
+        out["category"] = resolved_cat
+    return out
 
 
 def _normalize_hashtags(raw_tags: Any, theme: str) -> str:
@@ -114,9 +378,9 @@ def parse_metadata_json(
             title = str(parsed.get("title") or parsed.get("pin_title") or "").strip()
             caption = str(parsed.get("caption") or parsed.get("hook") or "").strip()
             desc = str(parsed.get("description") or parsed.get("pin_description") or "").strip()
+            alt_text = str(parsed.get("alt_text") or parsed.get("alt") or parsed.get("altText") or "").strip()
+            cat = str(parsed.get("category") or "").strip()
             hashtags = _normalize_hashtags(parsed.get("hashtags") or parsed.get("tags") or "", theme)
-            if not title and caption:
-                title = caption[:90]
             if not caption and title:
                 caption = title
             if (
@@ -125,36 +389,39 @@ def parse_metadata_json(
                 and "concise evocative title" not in title.lower()
                 and "catchy aesthetic pinterest" not in title.lower()
             ):
-                if hashtags and hashtags not in desc:
-                    full_desc = f"{desc.rstrip()} {hashtags}".strip()
-                else:
-                    full_desc = desc
-                return {
+                clean_desc = _strip_hashtags(desc) or desc
+                out_parsed: Dict[str, str] = {
                     "title": title[:160],
                     "caption": caption[:240],
-                    "description": full_desc[:600],
+                    "description": clean_desc[:600],
+                    "alt_text": _strip_hashtags(alt_text)[:200],
                     "hashtags": hashtags,
                 }
+                if cat:
+                    out_parsed["category"] = cat
+                return out_parsed
         except Exception:
             continue
 
-    # Fallback 1: parse labeled lines (Title: ... / Caption: ... / Description: ... / Hashtags: ...)
+    # Fallback 1: parse labeled lines (Title: ... / Description: ... / Alt text: ...)
     title_m = re.search(r"(?:^|\n)\s*(?:\*\*|#)?\s*(?:pin\s+)?title\s*(?:\*\*)?\s*:\s*(.+)", cleaned, re.IGNORECASE)
     cap_m = re.search(r"(?:^|\n)\s*(?:\*\*|#)?\s*caption\s*(?:\*\*)?\s*:\s*(.+)", cleaned, re.IGNORECASE)
-    desc_m = re.search(r"(?:^|\n)\s*(?:\*\*|#)?\s*description\s*(?:\*\*)?\s*:\s*(.+?)(?=\n\s*(?:\*\*|#)?\s*(?:hashtags|tags)|$)", cleaned, re.IGNORECASE | re.DOTALL)
+    desc_m = re.search(r"(?:^|\n)\s*(?:\*\*|#)?\s*description\s*(?:\*\*)?\s*:\s*(.+?)(?=\n\s*(?:\*\*|#)?\s*(?:alt[\s_-]*text|hashtags|tags)|$)", cleaned, re.IGNORECASE | re.DOTALL)
+    alt_m = re.search(r"(?:^|\n)\s*(?:\*\*|#)?\s*alt[\s_-]*text\s*(?:\*\*)?\s*:\s*(.+?)(?=\n\s*(?:\*\*|#)?\s*(?:hashtags|tags|category)|$)", cleaned, re.IGNORECASE | re.DOTALL)
     tags_m = re.search(r"(?:^|\n)\s*(?:\*\*|#)?\s*(?:hashtags|tags)\s*(?:\*\*)?\s*:\s*(.+)", cleaned, re.IGNORECASE)
 
     if title_m and desc_m:
         t_val = title_m.group(1).strip().strip('"').strip("*")
         c_val = (cap_m.group(1).strip().strip('"').strip("*") if cap_m else t_val)
-        d_val = " ".join(desc_m.group(1).strip().split())
+        d_val = _strip_hashtags(" ".join(desc_m.group(1).strip().split()))
+        a_val = _strip_hashtags(" ".join(alt_m.group(1).strip().split())) if alt_m else ""
         h_val = _normalize_hashtags(tags_m.group(1) if tags_m else "", theme)
         if t_val and d_val:
-            full_desc = f"{d_val.rstrip()} {h_val}".strip() if h_val and h_val not in d_val else d_val
             return {
                 "title": t_val[:160],
                 "caption": c_val[:240],
-                "description": full_desc[:600],
+                "description": d_val[:600],
+                "alt_text": a_val[:200],
                 "hashtags": h_val,
             }
 
@@ -169,7 +436,7 @@ def parse_metadata_json(
             found_tags = re.findall(r"#[\w\u00C0-\u024F\u1E00-\u1EFF]+", cleaned)
             h_val = _normalize_hashtags(found_tags, theme)
             non_tag_lines = [
-                re.sub(r"#[\w\u00C0-\u024F\u1E00-\u1EFF]+", "", ln).strip()
+                _strip_hashtags(ln)
                 for ln in lines
             ]
             non_tag_lines = [ln for ln in non_tag_lines if len(ln) >= 4]
@@ -177,11 +444,11 @@ def parse_metadata_json(
                 t_val = non_tag_lines[0][:140]
                 c_val = (non_tag_lines[1] if len(non_tag_lines) > 1 else t_val)[:220]
                 d_val = " ".join(non_tag_lines[1:] if len(non_tag_lines) > 1 else non_tag_lines)
-                full_desc = f"{d_val.rstrip()} {h_val}".strip() if h_val and h_val not in d_val else d_val
                 return {
                     "title": t_val,
                     "caption": c_val,
-                    "description": full_desc[:600],
+                    "description": d_val[:600],
+                    "alt_text": "",
                     "hashtags": h_val,
                 }
     return None

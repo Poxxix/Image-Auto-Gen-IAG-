@@ -13,8 +13,12 @@ from config import (
     DEFAULT_CAPTION_PROMPT,
     DEFAULT_SETTINGS,
     EXPORTS_DIR,
+    MAX_CDP_SLOTS,
     SENSITIVE_SETTING_KEYS,
+    normalize_cdp_slots,
     normalize_export_image_format,
+    normalize_filename_style,
+    normalize_picassy_categories,
 )
 
 
@@ -55,6 +59,11 @@ SCHEMA: Dict[str, str] = {
             metadata_language TEXT DEFAULT 'English',
             metadata_export_mode TEXT DEFAULT 'json',
             export_image_format TEXT DEFAULT 'original',
+            primary_tag TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            filename_style TEXT DEFAULT 'picassy_slug',
+            preferred_cdp_slot INTEGER DEFAULT 0,
+            active_cdp_slot INTEGER DEFAULT 0,
             caption_prompt TEXT DEFAULT '',
             use_ai_caption_prompt INTEGER DEFAULT 1,
             optimize_prompt_english INTEGER DEFAULT 1,
@@ -87,6 +96,7 @@ SCHEMA: Dict[str, str] = {
             title TEXT DEFAULT '',
             caption TEXT DEFAULT '',
             description TEXT DEFAULT '',
+            alt_text TEXT DEFAULT '',
             hashtags TEXT DEFAULT '',
             image_file TEXT DEFAULT '',
             image_path TEXT DEFAULT '',
@@ -450,6 +460,7 @@ class DatabaseManager:
         data = dict(row)
         data["is_locked"] = bool(data.get("is_locked"))
         data["caption"] = data.get("caption") or ""
+        data["alt_text"] = data.get("alt_text") or ""
         data["hashtags"] = data.get("hashtags") or ""
         data["caption_file"] = data.get("caption_file") or ""
         try:
@@ -575,6 +586,71 @@ class DatabaseManager:
             ).fetchone()
         return int(row["id"]) if row else None
 
+    def claim_next_running_job_for_slot(
+        self,
+        slot_id: int,
+        *,
+        slot_online: bool = True,
+        allow_auto_cdp: bool = True,
+        allow_api_jobs: bool = True,
+    ) -> Optional[int]:
+        """
+        Atomically claims the next unclaimed `status = 'running'` job eligible for `slot_id`.
+        - Enforces 1 Job = 1 Slot across up to 4 concurrent Chrome CDP slots.
+        - Respects `preferred_cdp_slot` (`0 = Auto`, `1..4 = Pinned Slot`).
+        - Prefers jobs pinned explicitly to `slot_id` before auto-queued jobs.
+        """
+        sid = int(slot_id)
+        with self._conn() as conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT id, model, preferred_cdp_slot, active_cdp_slot
+                FROM jobs
+                WHERE status = 'running'
+                  AND (active_cdp_slot IS NULL OR active_cdp_slot = 0)
+                ORDER BY CASE WHEN preferred_cdp_slot = ? THEN 0 ELSE 1 END ASC, id ASC
+                """,
+                (sid,),
+            ).fetchall()
+
+            for row in rows:
+                pref = int(row["preferred_cdp_slot"] or 0)
+                model_str = str(row["model"] or "chrome-cdp/gemini")
+                is_cdp = model_str.startswith("chrome-cdp/")
+
+                if pref != 0 and pref != sid:
+                    continue
+                if is_cdp:
+                    # Auto CDP jobs should go to an online slot unless pinned or fallback Slot #1
+                    if pref == 0 and not slot_online and not allow_auto_cdp:
+                        continue
+                else:
+                    if not allow_api_jobs:
+                        continue
+
+                jid = int(row["id"])
+                conn.execute(
+                    "UPDATE jobs SET active_cdp_slot = ?, updated_at = ? WHERE id = ?",
+                    (sid, now_iso(), jid),
+                )
+                return jid
+        return None
+
+    def release_job_slot(self, job_id: int, expected_slot: Optional[int] = None) -> None:
+        with self._conn() as conn:
+            if expected_slot is not None:
+                conn.execute(
+                    "UPDATE jobs SET active_cdp_slot = 0 WHERE id = ? AND active_cdp_slot = ?",
+                    (job_id, int(expected_slot)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE jobs SET active_cdp_slot = 0 WHERE id = ?",
+                    (job_id,),
+                )
+
     def list_job_generations(self, job_id: int) -> List[Dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -599,6 +675,7 @@ class DatabaseManager:
             "title",
             "caption",
             "description",
+            "alt_text",
             "hashtags",
             "image_file",
             "image_path",
@@ -738,6 +815,13 @@ class DatabaseManager:
         data["export_image_format"] = normalize_export_image_format(
             data.get("export_image_format")
         )
+        data["primary_tag"] = (data.get("primary_tag") or "").strip() or (data.get("theme") or "")
+        data["category"] = (data.get("category") or "").strip()
+        data["filename_style"] = normalize_filename_style(
+            data.get("filename_style"), default="picassy_slug"
+        )
+        data["preferred_cdp_slot"] = int(data.get("preferred_cdp_slot") or 0)
+        data["active_cdp_slot"] = int(data.get("active_cdp_slot") or 0)
         data["caption_prompt"] = data.get("caption_prompt") or ""
         data["use_ai_caption_prompt"] = bool(
             data.get("use_ai_caption_prompt")
@@ -807,6 +891,10 @@ class DatabaseManager:
         metadata_language: str = "English",
         metadata_export_mode: str = "json",
         export_image_format: str = "original",
+        primary_tag: str = "",
+        category: str = "",
+        filename_style: str = "picassy_slug",
+        preferred_cdp_slot: int = 0,
         caption_prompt: str = "",
         use_ai_caption_prompt: bool = True,
         optimize_prompt_english: bool = True,
@@ -818,7 +906,14 @@ class DatabaseManager:
         reference_ids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         clean_theme = theme.strip()
-        slug = slugify_theme(clean_theme)
+        clean_primary_tag = (primary_tag or "").strip() or clean_theme
+        clean_category = (category or "").strip()
+        clean_filename_style = normalize_filename_style(filename_style, default="picassy_slug")
+        clean_pref_slot = int(preferred_cdp_slot or 0)
+        if clean_pref_slot < 0 or clean_pref_slot > MAX_CDP_SLOTS:
+            clean_pref_slot = 0
+
+        slug = slugify_theme(clean_primary_tag or clean_theme)
         ts_folder = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         root = Path(export_root_dir).expanduser() if export_root_dir else EXPORTS_DIR
         export_dir = root / f"{ts_folder}_{slug}"
@@ -837,12 +932,13 @@ class DatabaseManager:
                     theme, slug, base_prompt, reference_mode, run_mode,
                     target_count, batch_size, session_cap, cycle_references,
                     aspect_ratio, metadata_language, metadata_export_mode,
-                    export_image_format,
+                    export_image_format, primary_tag, category, filename_style,
+                    preferred_cdp_slot, active_cdp_slot,
                     caption_prompt, use_ai_caption_prompt, optimize_prompt_english,
                     model, export_dir, preset_id, fixed_elements_json,
                     variation_axes_json, reference_ids_json, status,
                     current_step, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_theme,
@@ -858,6 +954,11 @@ class DatabaseManager:
                     metadata_language,
                     clean_mode,
                     clean_image_format,
+                    clean_primary_tag,
+                    clean_category,
+                    clean_filename_style,
+                    clean_pref_slot,
+                    0,
                     (caption_prompt or DEFAULT_CAPTION_PROMPT).strip(),
                     1 if use_ai_caption_prompt else 0,
                     1 if optimize_prompt_english else 0,
@@ -1005,6 +1106,11 @@ class DatabaseManager:
             "metadata_language",
             "metadata_export_mode",
             "export_image_format",
+            "primary_tag",
+            "category",
+            "filename_style",
+            "preferred_cdp_slot",
+            "active_cdp_slot",
             "caption_prompt",
             "model",
             "export_dir",
@@ -1021,6 +1127,16 @@ class DatabaseManager:
             updates["export_image_format"] = normalize_export_image_format(
                 updates["export_image_format"]
             )
+        if "filename_style" in updates:
+            updates["filename_style"] = normalize_filename_style(
+                updates["filename_style"], default="picassy_slug"
+            )
+        if "preferred_cdp_slot" in updates:
+            val = int(updates["preferred_cdp_slot"] or 0)
+            updates["preferred_cdp_slot"] = val if 0 <= val <= MAX_CDP_SLOTS else 0
+        if "active_cdp_slot" in updates:
+            val = int(updates["active_cdp_slot"] or 0)
+            updates["active_cdp_slot"] = val if 0 <= val <= MAX_CDP_SLOTS else 0
         if "cycle_references" in fields and fields["cycle_references"] is not None:
             updates["cycle_references"] = 1 if fields["cycle_references"] else 0
         if "use_ai_caption_prompt" in fields and fields["use_ai_caption_prompt"] is not None:

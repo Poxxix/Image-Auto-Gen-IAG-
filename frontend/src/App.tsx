@@ -80,10 +80,12 @@ export function App() {
     return jobs[0] || null
   }, [jobs, activeJobId])
 
-  const runningJobId = React.useMemo(() => {
-    const found = jobs.find((j) => j.status === "running")
-    return found ? found.id : null
-  }, [jobs])
+  const runningJobIds = React.useMemo(
+    () => jobs.filter((j) => j.status === "running").map((j) => j.id),
+    [jobs]
+  )
+  const runningJobsKey = runningJobIds.join(",")
+  const runningJobId = runningJobIds[0] ?? null
 
   const syncJobInListOnly = (updated: ImageSetJob) => {
     setJobs((prev) => {
@@ -163,18 +165,30 @@ export function App() {
     refreshAll()
   }, [refreshAll])
 
-  // Lightweight polling during active runs (only active job + logs, stable interval)
+  // Lightweight polling during active runs (all running jobs up to 4 slots + system slot status)
   React.useEffect(() => {
-    if (runningJobId) {
+    const runningIdsKey = runningJobIds.join(",")
+    if (runningIdsKey) {
+      const targetIds = runningIdsKey
+        .split(",")
+        .map((s) => Number(s))
+        .filter((n) => Number.isFinite(n) && n > 0)
       const interval = setInterval(async () => {
         try {
-          const [freshJob, jobLogs] = await Promise.all([
-            fetchJob(runningJobId),
-            fetchActivityLogs(runningJobId),
+          const activeId = activeJobIdRef.current || targetIds[0]
+          const [nextStatus, activeLogs, ...freshJobs] = await Promise.all([
+            fetchSystemStatus().catch(() => null),
+            activeId ? fetchActivityLogs(activeId).catch(() => null) : Promise.resolve(null),
+            ...targetIds.map((id) => fetchJob(id).catch(() => null)),
           ])
-          syncJobInListOnly(freshJob)
-          if (!activeJobIdRef.current || activeJobIdRef.current === runningJobId) {
-            setLogs(jobLogs)
+          if (nextStatus) {
+            setStatus(nextStatus)
+          }
+          for (const fj of freshJobs) {
+            if (fj) syncJobInListOnly(fj)
+          }
+          if (activeLogs) {
+            setLogs(activeLogs)
           }
         } catch {
           // ignore
@@ -185,7 +199,7 @@ export function App() {
 
     const idleInterval = setInterval(refreshAll, 10000)
     return () => clearInterval(idleInterval)
-  }, [runningJobId, refreshAll])
+  }, [runningJobIds, refreshAll])
 
   const updateJobInState = (updated: ImageSetJob) => {
     syncJobInListOnly(updated)
@@ -392,6 +406,7 @@ export function App() {
       title?: string
       caption?: string
       description?: string
+      alt_text?: string
       hashtags?: string
       variation_axes?: TurnVariationAxes
     }
@@ -638,9 +653,13 @@ export function App() {
     }
   }
 
-  const handleLaunchCdp = async (engine = "gemini", forceRestart = false) => {
+  const handleLaunchCdp = async (
+    engine = "gemini",
+    forceRestart = false,
+    slotId = 1
+  ) => {
     try {
-      const res = await launchCdpBrowser(engine, forceRestart)
+      const res = await launchCdpBrowser(engine, forceRestart, slotId)
       await refreshAll()
       setNotice({
         tone: res.launched ? "emerald" : "rose",
@@ -736,6 +755,8 @@ export function App() {
           metadataLanguages={
             status?.metadata_languages || ["English", "Vietnamese"]
           }
+          picassyCategories={status?.picassy_categories || []}
+          cdpSlots={status?.cdp_slots || []}
           settings={status?.settings || null}
           references={references}
           recentJobs={jobs}
@@ -754,6 +775,8 @@ export function App() {
         <PlanScreen
           job={activeJob}
           presets={status?.presets || []}
+          picassyCategories={status?.picassy_categories || []}
+          cdpSlots={status?.cdp_slots || []}
           allReferences={references}
           onNavigateTab={handleSelectTab}
           onUpdateJob={handleUpdateJob}
@@ -770,6 +793,7 @@ export function App() {
         <RunScreen
           job={activeJob}
           providers={status?.providers || []}
+          cdpSlots={status?.cdp_slots || []}
           logs={logs}
           onNavigateTab={handleSelectTab}
           onStartJob={handleStartJob}
@@ -779,7 +803,13 @@ export function App() {
           onRetryFailed={handleRetryFailed}
           onRetrySingleTurn={handleRetrySingleTurn}
           onSkipTurn={handleSkipTurn}
-          onRestartBrowser={() => handleLaunchCdp("gemini", true)}
+          onRestartBrowser={(slotId) =>
+            handleLaunchCdp(
+              "gemini",
+              true,
+              slotId || activeJob?.active_cdp_slot || activeJob?.preferred_cdp_slot || 1
+            )
+          }
           onRetryMetadata={handleRetryMetadata}
           onDeleteGeneration={handleDeleteGeneration}
           onOpenFolder={handleOpenFolder}
@@ -790,6 +820,7 @@ export function App() {
         <GalleryScreen
           jobs={jobs}
           activeJob={activeJob}
+          picassyCategories={status?.picassy_categories || []}
           onSelectJob={(j) => selectJobAndRemember(j)}
           onNavigateTab={handleSelectTab}
           onUpdateJob={handleUpdateJob}
@@ -814,6 +845,8 @@ export function App() {
           settings={status?.settings || null}
           providers={status?.providers || []}
           cdp={status?.cdp || null}
+          cdpSlots={status?.cdp_slots || []}
+          picassyCategories={status?.picassy_categories || []}
           aspectRatios={status?.aspect_ratios || ["1:1", "4:5", "9:16", "16:9", "3:2"]}
           metadataLanguages={
             status?.metadata_languages || ["English", "Vietnamese"]

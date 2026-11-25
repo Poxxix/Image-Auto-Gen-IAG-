@@ -4,6 +4,33 @@ export type ReferenceMode = "prompt_only" | "local_upload" | "pinterest"
 export type RunMode = "fixed" | "continuous"
 export type MetadataExportMode = "json" | "caption" | "none"
 export type ExportImageFormat = "original" | "png" | "jpg" | "webp"
+export type FilenameStyle = "picassy_slug" | "studio_seq"
+export type MetadataProviderType =
+  | "auto"
+  | "gemini"
+  | "openai"
+  | "openai_compatible"
+  | "browser_cdp"
+  | "template"
+export type MetadataVisionMode = "thumbnail_512" | "text_only"
+
+export interface CdpSlotStatus {
+  slot_id: number
+  label: string
+  port: number
+  profile_name: string
+  profile_dir?: string
+  enabled: boolean
+  connected: boolean
+  online: boolean
+  windowless?: boolean
+  page_count?: number
+  browser?: string | null
+  endpoint?: string
+  open_engines?: string[]
+  active_job_id?: number | null
+  active_generation_id?: number | null
+}
 
 export const EXPORT_IMAGE_FORMAT_OPTIONS: ReadonlyArray<{
   id: ExportImageFormat
@@ -135,6 +162,7 @@ export interface GenerationItem {
   title: string
   caption: string
   description: string
+  alt_text?: string
   hashtags: string
   image_file: string
   image_path: string
@@ -168,6 +196,11 @@ export interface ImageSetJob {
   id: number
   theme: string
   slug: string
+  primary_tag?: string
+  category?: string
+  filename_style?: FilenameStyle
+  preferred_cdp_slot?: number
+  active_cdp_slot?: number
   base_prompt: string
   reference_mode: ReferenceMode
   run_mode: RunMode
@@ -239,8 +272,17 @@ export interface StudioSettings {
   default_aspect_ratio: string
   default_metadata_language: string
   default_metadata_export_mode?: MetadataExportMode
+  default_filename_style?: FilenameStyle
   default_caption_prompt?: string
   use_ai_caption_prompt?: boolean
+  metadata_provider?: MetadataProviderType
+  metadata_model?: string
+  metadata_api_base_url?: string
+  metadata_api_key?: string
+  metadata_api_key_configured?: boolean
+  metadata_vision_mode?: MetadataVisionMode
+  picassy_categories?: string[]
+  cdp_slots?: Array<Pick<CdpSlotStatus, "slot_id" | "port" | "label" | "enabled"> & Partial<CdpSlotStatus>>
   optimize_prompt_english: boolean
   remove_watermark?: boolean
   fresh_chat_per_turn?: boolean
@@ -261,6 +303,8 @@ export interface StudioSettings {
 }
 
 export interface CdpStatus {
+  slot_id?: number
+  port?: number
   connected: boolean
   online: boolean
   browser: string | null
@@ -271,6 +315,7 @@ export interface CdpStatus {
 export interface SystemStatusResponse {
   ok: boolean
   cdp: CdpStatus
+  cdp_slots?: CdpSlotStatus[]
   providers: ProviderModel[]
   presets: StudioPreset[]
   caption_style_presets?: CaptionStylePreset[]
@@ -279,6 +324,10 @@ export interface SystemStatusResponse {
   metadata_languages: string[]
   metadata_export_modes?: MetadataExportMode[]
   export_image_formats?: ExportImageFormat[]
+  filename_styles?: FilenameStyle[]
+  metadata_providers?: MetadataProviderType[]
+  metadata_vision_modes?: MetadataVisionMode[]
+  picassy_categories?: string[]
   settings: StudioSettings
   summary: {
     total_jobs: number
@@ -300,6 +349,10 @@ export interface ActivityLog {
 export interface CreateJobPayload {
   theme: string
   base_prompt?: string
+  primary_tag?: string
+  category?: string
+  filename_style?: FilenameStyle
+  preferred_cdp_slot?: number
   reference_mode: ReferenceMode
   run_mode: RunMode
   target_count: number
@@ -505,6 +558,7 @@ export async function updateGeneration(
     title?: string
     caption?: string
     description?: string
+    alt_text?: string
     hashtags?: string
     variation_axes?: TurnVariationAxes
     fixed_elements?: FixedElements
@@ -670,13 +724,24 @@ export async function changeJobExportFolder(
 
 export async function launchCdpBrowser(
   engine = "gemini",
-  forceRestart = false
-): Promise<{ launched: boolean; message: string; status: CdpStatus }> {
+  forceRestart = false,
+  slotId = 1
+): Promise<{
+  launched: boolean
+  slot_id?: number
+  port?: number
+  message: string
+  status: CdpStatus
+}> {
   return apiJson(
     "/api/providers/cdp/launch",
     {
       method: "POST",
-      body: JSON.stringify({ engine, force_restart: forceRestart }),
+      body: JSON.stringify({
+        engine,
+        force_restart: forceRestart,
+        slot_id: slotId,
+      }),
     },
     30000
   )

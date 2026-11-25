@@ -45,10 +45,12 @@ import {
   EXPORT_IMAGE_FORMAT_OPTIONS,
   getReferenceImageUrl,
   suggestVariationAxes,
+  type CdpSlotStatus,
   type CreateJobPayload,
   type EnabledAxes,
   type EnabledFixed,
   type ExportImageFormat,
+  type FilenameStyle,
   type FixedElements,
   type GenerationItem,
   type ImageSetJob,
@@ -61,9 +63,23 @@ import {
 } from "@/services/studioApi"
 import { cn } from "@/lib/utils"
 
+const DEFAULT_PLAN_CATEGORIES = [
+  "AI Prompts",
+  "Anime",
+  "Art",
+  "Fashions",
+  "Nail",
+  "Photography Topics",
+  "Posters & Visuals",
+  "Tattoos",
+  "Wallpaper",
+]
+
 export interface PlanScreenProps {
   job: ImageSetJob | null
   presets?: StudioPreset[]
+  picassyCategories?: string[]
+  cdpSlots?: CdpSlotStatus[]
   allReferences: ReferenceItem[]
   onNavigateTab: (tab: StudioTab) => void
   onUpdateJob: (jobId: number, updates: Partial<CreateJobPayload>) => Promise<void>
@@ -95,6 +111,8 @@ const splitLines = (txt: string) =>
 export function PlanScreen({
   job,
   presets = [],
+  picassyCategories = DEFAULT_PLAN_CATEGORIES,
+  cdpSlots = [],
   allReferences,
   onNavigateTab,
   onUpdateJob,
@@ -105,6 +123,8 @@ export function PlanScreen({
   onDeleteGeneration,
   onStartJob,
 }: PlanScreenProps) {
+  const categoryOptions =
+    picassyCategories.length > 0 ? picassyCategories : DEFAULT_PLAN_CATEGORIES
   const [editingPrompts, setEditingPrompts] = React.useState<Record<number, string>>({})
   const [editingAxes, setEditingAxes] = React.useState<Record<number, TurnVariationAxes>>({})
   const [savingGenId, setSavingGenId] = React.useState<number | null>(null)
@@ -124,6 +144,11 @@ export function PlanScreen({
   const [pageIndex, setPageIndex] = React.useState(1)
   const pageSize = 24
   const [themeDraft, setThemeDraft] = React.useState("")
+  const [primaryTagDraft, setPrimaryTagDraft] = React.useState("")
+  const [categoryDraft, setCategoryDraft] = React.useState("Art")
+  const [filenameStyleDraft, setFilenameStyleDraft] =
+    React.useState<FilenameStyle>("picassy_slug")
+  const [preferredSlotDraft, setPreferredSlotDraft] = React.useState<number>(0)
   const [basePromptDraft, setBasePromptDraft] = React.useState("")
   const [captionPromptDraft, setCaptionPromptDraft] = React.useState("")
   const [presetDraft, setPresetDraft] = React.useState("")
@@ -174,6 +199,10 @@ export function PlanScreen({
     setEditingPrompts(nextPrompts)
     setEditingAxes(nextAxes)
     setThemeDraft(job.theme || "")
+    setPrimaryTagDraft(job.primary_tag || job.theme || "")
+    setCategoryDraft(job.category || categoryOptions[0] || "Art")
+    setFilenameStyleDraft((job.filename_style as FilenameStyle) || "picassy_slug")
+    setPreferredSlotDraft(Number(job.preferred_cdp_slot || 0))
     setBasePromptDraft(job.base_prompt || "")
     setCaptionPromptDraft(job.caption_prompt || "")
     setPresetDraft(job.preset_id || "auto_universal")
@@ -448,6 +477,10 @@ export function PlanScreen({
     try {
       await onUpdateJob(job.id, {
         theme: themeDraft.trim(),
+        primary_tag: primaryTagDraft.trim() || themeDraft.trim(),
+        category: categoryDraft.trim(),
+        filename_style: filenameStyleDraft,
+        preferred_cdp_slot: preferredSlotDraft,
         base_prompt: basePromptDraft.trim(),
         caption_prompt: captionPromptDraft.trim(),
         preset_id: presetDraft,
@@ -684,6 +717,70 @@ export function PlanScreen({
                   placeholder="Optional shared visual direction across all shots..."
                   className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-sm text-white ring-1 ring-white/[0.1] outline-none focus:ring-2 focus:ring-white/30"
                 />
+              </div>
+            </div>
+
+            {/* Picassy Keyword, Category, Filename Rule & Target Chrome Slot */}
+            <div className="grid grid-cols-1 gap-3 rounded-xl bg-white/[0.02] p-3.5 ring-1 ring-white/[0.07] sm:grid-cols-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-amber-200/90">
+                  Tag chính (Primary Keyword)
+                </label>
+                <input
+                  type="text"
+                  value={primaryTagDraft}
+                  onChange={(e) => setPrimaryTagDraft(e.target.value)}
+                  className="h-9 rounded-lg bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.1]"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-[#d1d5db]">
+                  Category (1 per Job)
+                </label>
+                <select
+                  value={categoryDraft}
+                  onChange={(e) => setCategoryDraft(e.target.value)}
+                  className="h-9 rounded-lg bg-[#0e1117] px-2.5 text-xs text-white ring-1 ring-white/[0.1]"
+                >
+                  {categoryOptions.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-[#d1d5db]">
+                  Filename Pattern
+                </label>
+                <select
+                  value={filenameStyleDraft}
+                  onChange={(e) => setFilenameStyleDraft(e.target.value as FilenameStyle)}
+                  className="h-9 rounded-lg bg-[#0e1117] px-2.5 text-xs text-white ring-1 ring-white/[0.1]"
+                >
+                  <option value="picassy_slug">Picassy (slug-1, 2...)</option>
+                  <option value="studio_seq">Legacy (001_slug)</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-sky-200/90">
+                  Chrome CDP Slot
+                </label>
+                <select
+                  value={String(preferredSlotDraft)}
+                  onChange={(e) => setPreferredSlotDraft(Number(e.target.value) || 0)}
+                  className="h-9 rounded-lg bg-[#0e1117] px-2.5 text-xs text-white ring-1 ring-white/[0.1]"
+                >
+                  <option value="0">Auto (Next Free Slot)</option>
+                  {(cdpSlots.length > 0
+                    ? cdpSlots
+                    : [{ slot_id: 1, port: 9222 }, { slot_id: 2, port: 9223 }, { slot_id: 3, port: 9224 }, { slot_id: 4, port: 9225 }]
+                  ).map((s) => (
+                    <option key={s.slot_id} value={String(s.slot_id)}>
+                      Slot #{s.slot_id} (:{s.port})
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -1094,10 +1191,10 @@ export function PlanScreen({
               ? `Fixed Set · ${job.generations.length} Shots`
               : `Continuous Wave · ${job.batch_size}/wave (Cap ${job.session_cap})`}
           </p>
-          <p className="mt-0.5 font-mono-tech text-[11px] text-amber-300/90">
-            {job.metadata_language} · Export:{" "}
+          <p className="mt-0.5 font-mono-tech text-[11px] text-amber-300/90 truncate">
+            {job.metadata_language} · Cat: {job.category || "Auto"} · Tag: {job.primary_tag || job.theme} ·{" "}
             {currentExportMode === "caption"
-              ? "Pin Caption (.txt)"
+              ? "Picassy (.txt)"
               : currentExportMode === "none"
                 ? "Image Only"
                 : "Sidecar (.json)"}

@@ -26,6 +26,7 @@ import {
   getJobZipUrl,
   getReferenceImageUrl,
   type ActivityLog,
+  type CdpSlotStatus,
   type ImageSetJob,
   type ProviderModel,
   type StudioTab,
@@ -35,6 +36,7 @@ import { cn } from "@/lib/utils"
 export interface RunScreenProps {
   job: ImageSetJob | null
   providers: ProviderModel[]
+  cdpSlots?: CdpSlotStatus[]
   logs: ActivityLog[]
   onNavigateTab: (tab: StudioTab) => void
   onStartJob: (jobId: number) => Promise<void>
@@ -44,7 +46,7 @@ export interface RunScreenProps {
   onRetryFailed: (jobId: number) => Promise<void>
   onRetrySingleTurn: (genId: number, mutateAxes: boolean) => Promise<void>
   onSkipTurn?: (genId: number) => Promise<void>
-  onRestartBrowser?: () => Promise<void>
+  onRestartBrowser?: (slotId?: number) => Promise<void>
   onRetryMetadata: (genId: number, useBrowserTurn: boolean) => Promise<void>
   onDeleteGeneration: (genId: number) => Promise<void>
   onOpenFolder: (jobId: number) => Promise<void>
@@ -53,6 +55,7 @@ export interface RunScreenProps {
 export function RunScreen({
   job,
   providers,
+  cdpSlots = [],
   logs,
   onNavigateTab,
   onStartJob,
@@ -201,15 +204,20 @@ export function RunScreen({
             </StudioButton>
           )}
 
-          {onRestartBrowser && (isRunning || isPaused) && (
-            <StudioButton
-              variant="secondary"
-              onClick={onRestartBrowser}
-              title="Force restart Chrome (:9222) if browser tab is hung"
-            >
-              Restart :9222
-            </StudioButton>
-          )}
+          {onRestartBrowser && (isRunning || isPaused) && (() => {
+            const activeSlotId = job.active_cdp_slot || job.preferred_cdp_slot || 1
+            const slotObj = cdpSlots.find((s) => s.slot_id === activeSlotId)
+            const targetPort = slotObj?.port || 9221 + activeSlotId
+            return (
+              <StudioButton
+                variant="secondary"
+                onClick={() => onRestartBrowser(activeSlotId)}
+                title={`Force restart Chrome Slot #${activeSlotId} (:${targetPort}) if browser tab is hung`}
+              >
+                Restart Slot #{activeSlotId} (:{targetPort})
+              </StudioButton>
+            )
+          })()}
 
           <StudioButton
             variant="secondary"
@@ -565,6 +573,22 @@ export function RunScreen({
               <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
                 <span>Active model</span>
                 <span className="font-mono-tech text-white">{job.model}</span>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
+                <span>Assigned Chrome Slot</span>
+                <span className="font-mono-tech text-sky-300">
+                  {job.active_cdp_slot
+                    ? `Running Slot #${job.active_cdp_slot} (:${9221 + job.active_cdp_slot})`
+                    : job.preferred_cdp_slot
+                      ? `Pinned Slot #${job.preferred_cdp_slot} (:${9221 + job.preferred_cdp_slot})`
+                      : "Auto (1 Job = 1 Slot)"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
+                <span>Category / Filename</span>
+                <span className="font-mono-tech text-[#e5e7eb]">
+                  {(job.category || "Auto") + " · " + (job.filename_style === "studio_seq" ? "001_slug" : "slug-1")}
+                </span>
               </div>
               <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
                 <span>Concurrency</span>

@@ -92,42 +92,85 @@ def test_module_2() -> None:
 
 
 def test_module_3() -> None:
-    print("\n=== MODULE 3: IMAGE PROVIDERS & PINTEREST CAPTION PROMPT PARSER ===")
+    print("\n=== MODULE 3: IMAGE PROVIDERS, PICASSY SEO BOUNDS & MULTI-SLOT POOL ===")
+    from modules.metadata_parser import fit_picassy_metadata, validate_picassy_metadata
+
     providers = list_available_providers()
     cdp = check_cdp_status()
     print(f"[INFO] Registered providers: {[p['id'] for p in providers]} | CDP connected: {cdp['connected']}")
     assert any(p["id"] == "chrome-cdp/gemini" for p in providers)
 
     prompt_text = build_metadata_prompt(
-        theme="Red Glossy Nails",
-        prompt_final="Close-up manicure in warm sunlight",
-        metadata_language="Vietnamese",
+        theme="Sympathy Messages",
+        prompt_final="Soft botanical sympathy watercolor card",
+        metadata_language="English",
         index_num=1,
-        caption_prompt="Viết caption thả thính sang chảnh để đăng Pinterest",
+        primary_tag="Sympathy Messages",
+        caption_prompt="Keep natural supportive wording",
     )
-    assert "Viết caption thả thính sang chảnh" in prompt_text
+    assert "Sympathy Messages" in prompt_text
+    assert "100 to 125 characters" in prompt_text
 
     parsed_json = parse_metadata_json(
-        '```json\n{"title": "Mẫu Nail Đỏ Cherry Sang Chảnh", "caption": "Đỏ rượu quyến rũ cho mùa lễ hội", "description": "Gợi ý mẫu nail đỏ bóng cực tôn da.", "hashtags": "#rednails #naildep"}\n```',
+        '```json\n{"title": "Mẫu Nail Đỏ Cherry Sang Chảnh", "caption": "Đỏ rượu quyến rũ cho mùa lễ hội", "description": "Gợi ý mẫu nail đỏ bóng cực tôn da.", "alt_text": "Close-up aesthetic manicure showing glossy cherry red nail art framed cleanly under soft afternoon light.", "hashtags": "#rednails #naildep"}\n```',
         theme="Red Glossy Nails",
     )
     assert parsed_json and parsed_json["title"] == "Mẫu Nail Đỏ Cherry Sang Chảnh"
-    assert "#rednails" in parsed_json["hashtags"]
-    print("[PASS] Provider registry & Pinterest Caption/Description parser verified.")
+    assert "#" not in parsed_json["description"]
+
+    # Validate strict Picassy SEO boundaries (Title <= 60 starts w/ kw, Desc <= 160, Alt 100..125)
+    fitted = fit_picassy_metadata(
+        {
+            "title": "Aesthetic Inspirations for Beautiful Sympathy Messages with Delicate White Lilies and Warm Sunlight",
+            "description": "Share comforting Sympathy Messages surrounded by gentle white lilies in warm morning daylight crafted naturally #sympathy #flowers #cards.",
+            "alt_text": "White lilies with warm light.",
+        },
+        primary_tag="Sympathy Messages",
+        theme="Sympathy Messages",
+        metadata_language="English",
+        category="Photography Topics",
+    )
+    issues = validate_picassy_metadata(fitted, "Sympathy Messages")
+    assert not issues, f"Picassy SEO validation failed: {issues} | fitted={fitted}"
+    assert fitted["title"].startswith("Sympathy Messages")
+    assert len(fitted["title"]) <= 60
+    assert len(fitted["description"]) <= 160
+    assert 100 <= len(fitted["alt_text"]) <= 125
+    assert "#" not in fitted["description"]
+
+    # Validate 4-slot atomic job claiming isolation (1 Job = 1 Slot)
+    j1 = db.create_job(theme="Slot Test 1", primary_tag="Sympathy Messages", category="Art", preferred_cdp_slot=1)
+    j2 = db.create_job(theme="Slot Test 2", primary_tag="Friendship Quotes", category="Wallpaper", preferred_cdp_slot=2)
+    try:
+        db.update_job(j1["id"], status="running")
+        db.update_job(j2["id"], status="running")
+        c1 = db.claim_next_running_job_for_slot(1, slot_online=True)
+        c2 = db.claim_next_running_job_for_slot(2, slot_online=True)
+        assert c1 == j1["id"] and c2 == j2["id"], f"Slot claim mismatch: c1={c1}, c2={c2}"
+        assert db.claim_next_running_job_for_slot(3, slot_online=True) is None
+        print("[PASS] Multi-slot job isolation (4-slot pool) + Picassy SEO bounds (60 / 160 / 100-125) verified.")
+    finally:
+        shutil.rmtree(Path(j1["export_dir"]), ignore_errors=True)
+        shutil.rmtree(Path(j2["export_dir"]), ignore_errors=True)
+        db.delete_job(j1["id"])
+        db.delete_job(j2["id"])
 
 
 def test_module_4() -> None:
-    print("\n=== MODULE 4: EXPORT MODES (JSON / CAPTION TXT / NONE) & DELETE RESEQUENCE ===")
+    print("\n=== MODULE 4: PICASSY FILENAME (<kw>-1, <kw>-2), EXPORT MODES & RESEQUENCE ===")
     job = db.create_job(
-        theme="Cafe Mua Thu",
-        base_prompt="Warm afternoon rain by the wooden window",
+        theme="Beautiful girl with bikini",
+        primary_tag="Beautiful girl with bikini",
+        category="Photography Topics",
+        filename_style="picassy_slug",
+        base_prompt="Warm golden sunset at a clean coastal beach",
         reference_mode="prompt_only",
         run_mode="fixed",
         target_count=2,
         aspect_ratio="1:1",
-        metadata_language="Vietnamese",
+        metadata_language="English",
         metadata_export_mode="json",
-        caption_prompt="Viết caption chuẩn Pinterest cho quán cafe mùa thu",
+        caption_prompt="Describe naturally for Picassy SEO",
         model="chrome-cdp/gemini",
     )
     job_id = job["id"]
@@ -136,13 +179,13 @@ def test_module_4() -> None:
             gen = db.create_generation(
                 job_id=job_id,
                 index_num=idx,
-                prompt_final=f"Warm café window in autumn rain #{idx}, 35mm editorial angle.",
+                prompt_final=f"Coastal sunset portrait #{idx}, 35mm editorial angle.",
                 model="chrome-cdp/gemini",
                 variation_axes={
                     "camera_angle": "35mm editorial angle",
-                    "lighting": "Warm tungsten window glow",
-                    "composition": "Rule-of-thirds table foreground",
-                    "atmosphere": "Autumn rain outside glass",
+                    "lighting": "Warm golden hour glow",
+                    "composition": "Rule-of-thirds ocean framing",
+                    "atmosphere": "Calm coastal breeze",
                 },
             )
             img_bytes = _make_sample_image_bytes(color, (210, 175, 130))
@@ -153,41 +196,47 @@ def test_module_4() -> None:
                 **saved,
             )
             meta = write_generation_metadata(job, gen, use_browser_turn=False)
+            assert meta["title"].startswith("Beautiful girl with bikini") and len(meta["title"]) <= 60
+            assert len(meta["description"]) <= 160
+            assert 100 <= len(meta["alt_text"]) <= 125
             gen = db.update_generation(
                 gen["id"],
                 title=meta["title"],
                 caption=meta["caption"],
                 description=meta["description"],
+                alt_text=meta["alt_text"],
                 hashtags=meta["hashtags"],
                 status="completed",
             )
             sync_generation_and_manifest(job_id, gen["id"])
 
         exp_dir = Path(job["export_dir"])
-        # 1. Verify JSON mode
-        assert (exp_dir / "001_cafe-mua-thu.json").exists()
-        assert (exp_dir / "002_cafe-mua-thu.json").exists()
+        # 1. Verify Picassy naming + JSON sidecars
+        assert (exp_dir / "beautiful-girl-with-bikini-1.png").exists()
+        assert (exp_dir / "beautiful-girl-with-bikini-1.json").exists()
+        assert (exp_dir / "beautiful-girl-with-bikini-2.png").exists()
+        assert (exp_dir / "beautiful-girl-with-bikini-2.json").exists()
         assert (exp_dir / "manifest.json").exists()
-        print("[PASS] Export Mode 'json': verified 001/002 .json sidecars + manifest.json.")
+        print("[PASS] Picassy slug naming & JSON export verified: beautiful-girl-with-bikini-1/2.png + .json.")
 
         # 2. Switch to 'caption' mode and verify .txt files replace .json files
         job = db.update_job(job_id, metadata_export_mode="caption")
         sync_job_manifest(job_id, job=job)
-        assert (exp_dir / "001_cafe-mua-thu.txt").exists()
-        assert (exp_dir / "002_cafe-mua-thu.txt").exists()
+        assert (exp_dir / "beautiful-girl-with-bikini-1.txt").exists()
+        assert (exp_dir / "beautiful-girl-with-bikini-2.txt").exists()
         assert (exp_dir / "captions.txt").exists()
-        assert not (exp_dir / "001_cafe-mua-thu.json").exists()
-        print("[PASS] Export Mode 'caption': verified 001/002 .txt captions + captions.txt (cleaned .json).")
+        assert not (exp_dir / "beautiful-girl-with-bikini-1.json").exists()
+        print("[PASS] Export Mode 'caption': verified -1/-2 .txt files + captions.txt (cleaned .json).")
 
         # 3. Switch to 'none' mode and verify only images remain
         job = db.update_job(job_id, metadata_export_mode="none")
         sync_job_manifest(job_id, job=job)
-        assert (exp_dir / "001_cafe-mua-thu.png").exists()
-        assert not (exp_dir / "001_cafe-mua-thu.txt").exists()
+        assert (exp_dir / "beautiful-girl-with-bikini-1.png").exists()
+        assert not (exp_dir / "beautiful-girl-with-bikini-1.txt").exists()
         assert not (exp_dir / "captions.txt").exists()
         print("[PASS] Export Mode 'none': verified pure image-only directory.")
 
-        # 4. Switch back to 'json' and test deleting Shot #1 -> Shot #2 re-sequences to #001 on disk
+        # 4. Switch back to 'json' and test deleting Shot #1 -> Shot #2 re-sequences to -1 on disk
         job = db.update_job(job_id, metadata_export_mode="json")
         sync_job_manifest(job_id, job=job)
         first_gen_id = job["generations"][0]["id"]
@@ -199,14 +248,15 @@ def test_module_4() -> None:
         assert len(refreshed["generations"]) == 1
         remaining = refreshed["generations"][0]
         assert remaining["index_num"] == 1
-        assert remaining["image_file"] == "001_cafe-mua-thu.png"
-        assert (exp_dir / "001_cafe-mua-thu.png").exists()
-        assert not (exp_dir / "002_cafe-mua-thu.png").exists()
-        print("[PASS] Delete & Resequence: deleted #001 and renamed #002 -> #001 on disk & SQLite.")
+        assert remaining["image_file"] == "beautiful-girl-with-bikini-1.png"
+        assert (exp_dir / "beautiful-girl-with-bikini-1.png").exists()
+        assert not (exp_dir / "beautiful-girl-with-bikini-2.png").exists()
+        print("[PASS] Delete & Resequence: deleted -1 and renamed -2 -> -1 on disk & SQLite.")
 
         # 5. Verify per-job export_image_format conversion (.jpg & .webp)
         jpg_job = db.create_job(
             theme="Format Check",
+            primary_tag="Format Check",
             metadata_export_mode="none",
             export_image_format="jpg",
         )
@@ -214,11 +264,11 @@ def test_module_4() -> None:
             assert jpg_job["export_image_format"] == "jpg"
             sample_png = _make_sample_image_bytes((60, 70, 90), (200, 180, 140))
             saved_jpg = save_generated_image_atomically(jpg_job, 1, sample_png, preferred_format="jpg")
-            assert saved_jpg["image_file"].endswith(".jpg")
+            assert saved_jpg["image_file"] == "format-check-1.jpg"
             assert saved_jpg["mime_type"] == "image/jpeg"
             assert Path(saved_jpg["image_path"]).exists()
             saved_webp = save_generated_image_atomically(jpg_job, 2, sample_png, preferred_format="webp")
-            assert saved_webp["image_file"].endswith(".webp")
+            assert saved_webp["image_file"] == "format-check-2.webp"
             assert saved_webp["mime_type"] == "image/webp"
             assert Path(saved_webp["image_path"]).exists()
             print("[PASS] Per-job export_image_format verified: .jpg (image/jpeg) & .webp (image/webp) conversion.")

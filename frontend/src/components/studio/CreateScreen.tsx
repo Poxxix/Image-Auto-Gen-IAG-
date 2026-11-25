@@ -35,9 +35,11 @@ import {
   getReferenceImageUrl,
   suggestVariationAxes,
   type CaptionStylePreset,
+  type CdpSlotStatus,
   type CreateJobPayload,
   type EnabledAxes,
   type EnabledFixed,
+  type FilenameStyle,
   type FixedElements,
   type ImageSetJob,
   type JobVariationAxesPool,
@@ -54,6 +56,18 @@ import {
 } from "@/services/studioApi"
 import { cn } from "@/lib/utils"
 
+function slugifyKeywordPreview(text: string): string {
+  const cleaned = text.replace(/đ/g, "d").replace(/Đ/g, "d")
+  const norm = cleaned.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  return (
+    norm
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 42) || "keyword"
+  )
+}
+
 export interface CreateScreenProps {
   providers: ProviderModel[]
   presets: StudioPreset[]
@@ -61,6 +75,8 @@ export interface CreateScreenProps {
   defaultCaptionPrompt: string
   aspectRatios: string[]
   metadataLanguages: string[]
+  picassyCategories?: string[]
+  cdpSlots?: CdpSlotStatus[]
   settings: StudioSettings | null
   references: ReferenceItem[]
   recentJobs: ImageSetJob[]
@@ -108,6 +124,18 @@ const RATIO_META: Record<
   "3:2": { label: "35mm Film", res: "1620×1080", wClass: "w-6", hClass: "h-4" },
 }
 
+const DEFAULT_CREATE_CATEGORIES = [
+  "AI Prompts",
+  "Anime",
+  "Art",
+  "Fashions",
+  "Nail",
+  "Photography Topics",
+  "Posters & Visuals",
+  "Tattoos",
+  "Wallpaper",
+]
+
 export function CreateScreen({
   providers,
   presets,
@@ -115,6 +143,8 @@ export function CreateScreen({
   defaultCaptionPrompt,
   aspectRatios,
   metadataLanguages,
+  picassyCategories = DEFAULT_CREATE_CATEGORIES,
+  cdpSlots = [],
   settings,
   references,
   recentJobs,
@@ -127,7 +157,16 @@ export function CreateScreen({
   onPickExportFolder,
   onSaveExportRoot,
 }: CreateScreenProps) {
+  const categoryOptions =
+    picassyCategories.length > 0 ? picassyCategories : DEFAULT_CREATE_CATEGORIES
   const [theme, setTheme] = React.useState("")
+  const [primaryTag, setPrimaryTag] = React.useState("")
+  const primaryTagManualRef = React.useRef(false)
+  const [category, setCategory] = React.useState<string>(categoryOptions[0] || "Art")
+  const [filenameStyle, setFilenameStyle] = React.useState<FilenameStyle>(
+    settings?.default_filename_style || "picassy_slug"
+  )
+  const [preferredCdpSlot, setPreferredCdpSlot] = React.useState<number>(0)
   const [basePrompt, setBasePrompt] = React.useState("")
   const [referenceMode, setReferenceMode] = React.useState<ReferenceMode>("prompt_only")
   const [runMode, setRunMode] = React.useState<RunMode>("fixed")
@@ -186,6 +225,9 @@ export function CreateScreen({
       }
       if (settings.default_metadata_export_mode) {
         setMetadataExportMode(settings.default_metadata_export_mode)
+      }
+      if (settings.default_filename_style) {
+        setFilenameStyle(settings.default_filename_style)
       }
       if (settings.export_image_format) {
         setExportImageFormat(settings.export_image_format)
@@ -440,6 +482,10 @@ export function CreateScreen({
 
     return {
       theme: theme.trim(),
+      primary_tag: (primaryTag.trim() || theme.trim()),
+      category: category.trim(),
+      filename_style: filenameStyle,
+      preferred_cdp_slot: preferredCdpSlot,
       base_prompt: basePrompt.trim(),
       reference_mode: referenceMode,
       run_mode: runMode,
@@ -557,8 +603,14 @@ export function CreateScreen({
                 <input
                   type="text"
                   value={theme}
-                  onChange={(e) => setTheme(e.target.value)}
-                  placeholder="What theme are we exploring? (e.g., Autumn Rain Café in Hanoi)"
+                  onChange={(e) => {
+                    const nextVal = e.target.value
+                    setTheme(nextVal)
+                    if (!primaryTagManualRef.current) {
+                      setPrimaryTag(nextVal)
+                    }
+                  }}
+                  placeholder="What theme are we exploring? (e.g., Sympathy Messages)"
                   className="min-h-[54px] w-full rounded-2xl bg-white/[0.035] px-4 text-base font-medium text-white placeholder:text-[#646b78] ring-1 ring-white/[0.1] outline-none focus:ring-2 focus:ring-white/30"
                 />
 
@@ -573,6 +625,9 @@ export function CreateScreen({
                       type="button"
                       onClick={() => {
                         setTheme(sample.theme)
+                        if (!primaryTagManualRef.current) {
+                          setPrimaryTag(sample.theme)
+                        }
                         setBasePrompt(sample.base)
                         handleApplyPreset(sample.preset)
                       }}
@@ -581,6 +636,71 @@ export function CreateScreen({
                       {sample.theme}
                     </button>
                   ))}
+                </div>
+
+                {/* Picassy Primary Tag (Keyword), 1 Category & Filename Pattern */}
+                <div className="mt-2 grid grid-cols-1 gap-3 rounded-2xl bg-white/[0.02] p-4 ring-1 ring-white/[0.08] sm:grid-cols-12">
+                  <div className="sm:col-span-5 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[11px] font-medium uppercase tracking-wider text-amber-200/90">
+                        Tag chính (Primary Keyword) *
+                      </label>
+                      <span className="font-mono-tech text-[10px] text-[#9ca3af] truncate">
+                        {filenameStyle === "picassy_slug"
+                          ? `${slugifyKeywordPreview(primaryTag || theme)}-1`
+                          : `001_${slugifyKeywordPreview(theme || primaryTag)}`}
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      value={primaryTag}
+                      onChange={(e) => {
+                        primaryTagManualRef.current = e.target.value.trim().length > 0
+                        setPrimaryTag(e.target.value)
+                      }}
+                      placeholder="Exact keyword (e.g., Sympathy Messages)"
+                      className="h-10 rounded-xl bg-black/30 px-3 text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.1] outline-none focus:ring-2 focus:ring-amber-400/40"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-4 flex flex-col gap-1.5">
+                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#d1d5db]">
+                      Category (1 Category / Job)
+                    </label>
+                    <Select
+                      value={categoryOptions.includes(category) ? category : categoryOptions[0]}
+                      onValueChange={(v) => v && setCategory(v)}
+                    >
+                      <SelectTrigger className="h-10 rounded-xl bg-black/30 px-3 text-xs text-white ring-1 ring-white/[0.1]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {categoryOptions.map((cat) => (
+                          <SelectItem key={cat} value={cat}>
+                            {cat}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="sm:col-span-3 flex flex-col gap-1.5">
+                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#d1d5db]">
+                      Filename Rule
+                    </label>
+                    <Select
+                      value={filenameStyle}
+                      onValueChange={(v) => v && setFilenameStyle(v as FilenameStyle)}
+                    >
+                      <SelectTrigger className="h-10 rounded-xl bg-black/30 px-3 text-xs text-white ring-1 ring-white/[0.1]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="picassy_slug">slug-1, 2...</SelectItem>
+                        <SelectItem value="studio_seq">001_slug</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </div>
 
@@ -1208,10 +1328,13 @@ export function CreateScreen({
                     <div className="flex items-center justify-between gap-4 pt-0.5">
                       <div>
                         <p className="text-xs font-medium text-white">
-                          Chạy thêm 1 lượt Prompt trực tiếp trên AI Browser sau mỗi ảnh
+                          Tạo Picassy Metadata bằng AI sau mỗi ảnh (Option 1A)
                         </p>
                         <p className="text-[11px] text-[#9ca3af]">
-                          Khi bật: sau khi lưu ảnh, gửi tiếp prompt này vào cửa sổ chat AI (:9222) để viết Caption & Description. Khi tắt: tạo tức thì (0 giây chờ).
+                          Router hiện tại: <span className="text-sky-300 font-mono-tech">{settings?.metadata_provider || "auto"}</span>
+                          {settings?.metadata_provider === "browser_cdp"
+                            ? " — gửi Prompt #2 trên Chrome CDP (tốn thêm quota ảnh)."
+                            : " — dùng Small Vision/Text Model (512px) hoặc Grammatical Engine để giữ trọn 100% quota Chrome CDP cho Prompt #1 tạo ảnh."}
                         </p>
                       </div>
                       <Switch
@@ -1254,6 +1377,32 @@ export function CreateScreen({
                     <span className="text-[11px] text-[#646b78]">
                       {currentModelInfo.rate_limit_note}
                     </span>
+                  )}
+                  {selectedModel.startsWith("chrome-cdp/") && (
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      <label className="text-[10px] font-mono-tech uppercase tracking-wider text-sky-300">
+                        Chrome CDP Slot
+                      </label>
+                      <Select
+                        value={String(preferredCdpSlot)}
+                        onValueChange={(v) => setPreferredCdpSlot(Number(v) || 0)}
+                      >
+                        <SelectTrigger className="h-8 w-52 rounded-xl bg-white/[0.04] px-2.5 text-[11px] text-white ring-1 ring-white/[0.08]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="0">Auto (Next Free Enabled Slot)</SelectItem>
+                          {(cdpSlots.length > 0
+                            ? cdpSlots
+                            : [{ slot_id: 1, port: 9222, label: "Slot 1", enabled: true, connected: false, open_engines: [] as string[], active_job_id: null, active_generation_id: null }]
+                          ).map((s) => (
+                            <SelectItem key={s.slot_id} value={String(s.slot_id)}>
+                              {`Slot #${s.slot_id} (:${s.port}) · ${s.connected ? "Online" : s.enabled ? "Standby" : "Disabled"}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   )}
                 </div>
 
@@ -1832,52 +1981,54 @@ export function CreateScreen({
               </div>
 
               {/* Export Contract Summary */}
-              <div className="rounded-2xl bg-black/40 p-3.5 ring-1 ring-white/[0.06] font-mono-tech text-[11px] text-[#9ca3af] space-y-1">
-                <p className="text-[#e5e7eb] font-medium">
-                  exports/YYYY-MM-DD_HHMMSS_
-                  {theme.trim()
-                    ? theme
-                        .trim()
-                        .toLowerCase()
-                        .replace(/[^a-z0-9]+/g, "-")
-                        .replace(/^-|-$/g, "")
-                        .slice(0, 20)
-                    : "theme-slug"}
-                  /
-                </p>
-                {metadataExportMode === "json" && (
-                  <>
-                    <p className="pl-2 text-[#646b78]">
-                      ├── 001_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 001_slug.json
+              {(() => {
+                const kwSlug = slugifyKeywordPreview(primaryTag || theme)
+                const ext = exportImageFormat === "original" ? "orig" : exportImageFormat
+                const f1 = filenameStyle === "studio_seq" ? `001_${kwSlug}` : `${kwSlug}-1`
+                const f2 = filenameStyle === "studio_seq" ? `002_${kwSlug}` : `${kwSlug}-2`
+                return (
+                  <div className="rounded-2xl bg-black/40 p-3.5 ring-1 ring-white/[0.06] font-mono-tech text-[11px] text-[#9ca3af] space-y-1">
+                    <p className="text-[#e5e7eb] font-medium">
+                      exports/YYYY-MM-DD_HHMMSS_{kwSlug.slice(0, 20)}/
                     </p>
-                    <p className="pl-2 text-[#646b78]">
-                      ├── 002_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 002_slug.json
+                    <p className="pl-2 text-[10px] text-amber-200/80">
+                      Tag: "{(primaryTag || theme || "keyword").trim()}" · Category: {category}
                     </p>
-                    <p className="pl-2 text-[#646b78]">└── manifest.json</p>
-                  </>
-                )}
-                {metadataExportMode === "caption" && (
-                  <>
-                    <p className="pl-2 text-amber-300/80">
-                      ├── 001_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 001_slug.txt
-                    </p>
-                    <p className="pl-2 text-amber-300/80">
-                      ├── 002_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} + 002_slug.txt
-                    </p>
-                    <p className="pl-2 text-amber-300/80">└── captions.txt (Pin SEO)</p>
-                  </>
-                )}
-                {metadataExportMode === "none" && (
-                  <>
-                    <p className="pl-2 text-emerald-300/80">
-                      ├── 001_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} (Image only)
-                    </p>
-                    <p className="pl-2 text-emerald-300/80">
-                      └── 002_slug.{exportImageFormat === "original" ? "orig" : exportImageFormat} (Max speed)
-                    </p>
-                  </>
-                )}
-              </div>
+                    {metadataExportMode === "json" && (
+                      <>
+                        <p className="pl-2 text-[#646b78]">
+                          ├── {f1}.{ext} + {f1}.json
+                        </p>
+                        <p className="pl-2 text-[#646b78]">
+                          ├── {f2}.{ext} + {f2}.json
+                        </p>
+                        <p className="pl-2 text-[#646b78]">└── manifest.json</p>
+                      </>
+                    )}
+                    {metadataExportMode === "caption" && (
+                      <>
+                        <p className="pl-2 text-amber-300/80">
+                          ├── {f1}.{ext} + {f1}.txt
+                        </p>
+                        <p className="pl-2 text-amber-300/80">
+                          ├── {f2}.{ext} + {f2}.txt
+                        </p>
+                        <p className="pl-2 text-amber-300/80">└── captions.txt (Picassy SEO)</p>
+                      </>
+                    )}
+                    {metadataExportMode === "none" && (
+                      <>
+                        <p className="pl-2 text-emerald-300/80">
+                          ├── {f1}.{ext} (Image only)
+                        </p>
+                        <p className="pl-2 text-emerald-300/80">
+                          └── {f2}.{ext} (Max speed)
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           </StudioPanel>
 

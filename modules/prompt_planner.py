@@ -903,13 +903,15 @@ def _suggest_via_cdp_turn(
         _inspect_generation_dom,
         _send_chat_message,
         check_cdp_status,
+        get_preferred_online_cdp_port,
     )
 
-    if not check_cdp_status().get("connected"):
+    target_port = get_preferred_online_cdp_port()
+    if not target_port or not check_cdp_status(cdp_port=target_port).get("connected"):
         return None
 
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(CDP_ENDPOINT, timeout=8000)
+        browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{target_port}", timeout=8000)
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = _find_or_open_engine_page(context, engine)
         try:
@@ -1378,9 +1380,18 @@ def suggest_axes_for_theme(
     if not clean_theme:
         raise ValueError("Please enter a Theme / Subject first so AI can suggest matching axes.")
 
+    from config import split_api_keys
+
     settings = db.get_settings(include_secrets=True)
-    gemini_key = str(settings.get("gemini_api_key") or "").strip()
-    openai_key = str(settings.get("openai_api_key") or "").strip()
+    meta_keys = split_api_keys(settings.get("metadata_api_key"))
+    gemini_keys = split_api_keys(settings.get("gemini_api_key"))
+    openai_keys = split_api_keys(settings.get("openai_api_key"))
+    gemini_key = (meta_keys[0] if meta_keys and not meta_keys[0].startswith("sk-") else "") or (
+        gemini_keys[0] if gemini_keys else ""
+    )
+    openai_key = (meta_keys[0] if meta_keys and meta_keys[0].startswith("sk-") else "") or (
+        openai_keys[0] if openai_keys else ""
+    )
 
     # Check if user selected a reference image so Vision API can inspect it
     ref_image_path: Optional[str] = None
@@ -1404,7 +1415,7 @@ def suggest_axes_for_theme(
                 return {
                     **res,
                     "source": "gemini_api",
-                    "source_label": "Gemini 2.0 Flash Vision API" if ref_image_path else "Gemini 2.0 Flash API",
+                    "source_label": "Gemini Flash Vision API" if ref_image_path else "Gemini Flash API",
                 }
         except Exception as exc:
             logger.debug("Gemini API axes suggestion fallback: %s", exc)
@@ -1427,7 +1438,7 @@ def suggest_axes_for_theme(
         except Exception as exc:
             logger.debug("OpenAI API axes suggestion fallback: %s", exc)
 
-    # Tier 2: Browser CDP Session (:9222)
+    # Tier 2: Active Browser CDP Slot
     if use_browser_turn:
         engine = model.split("/")[-1] if "/" in (model or "") else "gemini"
         if engine not in AI_ENGINES:
@@ -1442,7 +1453,7 @@ def suggest_axes_for_theme(
                 return {
                     **res,
                     "source": "browser_cdp",
-                    "source_label": f"{AI_ENGINES[engine]['label']} Browser (:9222)",
+                    "source_label": f"{AI_ENGINES[engine]['label']} Browser Slot",
                 }
         except Exception as exc:
             logger.debug("Browser CDP axes suggestion fallback: %s", exc)

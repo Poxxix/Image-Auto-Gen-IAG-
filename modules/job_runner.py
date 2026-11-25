@@ -4,7 +4,13 @@ import time
 from typing import Any, Dict, List, Optional
 from PIL import Image
 
-from config import normalize_export_image_format
+from config import (
+    CDP_PORT,
+    DEFAULT_PICASSY_CATEGORIES,
+    MAX_CDP_SLOTS,
+    normalize_cdp_slots,
+    normalize_export_image_format,
+)
 from database.db_manager import db, now_iso
 from modules.app_logging import logger
 from modules.export_manager import (
@@ -15,7 +21,9 @@ from modules.export_manager import (
 from modules.image_providers import (
     ProviderAuthError,
     ReferenceTooSimilarError,
+    check_cdp_status,
     generate_image_for_turn,
+    list_cdp_slots_status,
 )
 from modules.metadata_writer import write_generation_metadata
 from modules.prompt_planner import (
@@ -27,43 +35,73 @@ from modules.reference_sources.image_utils import dhash_distance
 
 
 class JobRunner:
+    """
+    4-Slot Parallel Execution Engine (Option 1 + Option 1A):
+    - Runs up to 4 independent Jobs concurrently across isolated Chrome CDP slots (:9222..:9225)
+    - Keeps 1 Job = 1 Slot so sequential dHash dedupe, continuity, and per-job pause isolation remain exact
+    - Isolates ProviderAuthError to only the affected Job so healthy Jobs keep running
+    """
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._wake_event = threading.Event()
-        self._active_job_id: Optional[int] = None
-        self._active_generation_id: Optional[int] = None
+        self._wake_cond = threading.Condition()
+        self._wake_seq = 0
+        self._slot_active_job: Dict[int, Optional[int]] = {}
+        self._slot_active_gen: Dict[int, Optional[int]] = {}
         self._paused_jobs: set[int] = set()
         self._cancelled_jobs: set[int] = set()
         self._skipped_generations: set[int] = set()
         self._deferred_generations: set[int] = set()
         self._drop_ref_generations: set[int] = set()
         self._sim_failures: Dict[int, int] = {}
-        self._cdp_turns_since_recycle: int = 0
-        self._recycle_next_cdp: bool = False
+        self._slot_turns_since_recycle: Dict[int, int] = {}
+        self._slot_recycle_next: Dict[int, bool] = {}
         self._stop_worker = False
-        self._worker_thread: Optional[threading.Thread] = None
+        self._worker_threads: Dict[int, threading.Thread] = {}
 
     def start_worker(self) -> None:
         with self._lock:
-            if self._worker_thread and self._worker_thread.is_alive():
-                return
             self._stop_worker = False
-            self._worker_thread = threading.Thread(
-                target=self._worker_loop,
-                name="StudioJobRunner",
-                daemon=True,
-            )
-            self._worker_thread.start()
+            for slot_id in range(1, MAX_CDP_SLOTS + 1):
+                existing = self._worker_threads.get(slot_id)
+                if existing and existing.is_alive():
+                    continue
+                t = threading.Thread(
+                    target=self._slot_worker_loop,
+                    args=(slot_id,),
+                    name=f"StudioSlotWorker-{slot_id}",
+                    daemon=True,
+                )
+                self._worker_threads[slot_id] = t
+                t.start()
+
+    def wake_workers(self) -> None:
+        with self._wake_cond:
+            self._wake_seq += 1
+            self._wake_cond.notify_all()
+
+    def get_slot_runtime_map(self) -> Dict[int, Dict[str, Any]]:
+        with self._lock:
+            out: Dict[int, Dict[str, Any]] = {}
+            for sid in range(1, MAX_CDP_SLOTS + 1):
+                out[sid] = {
+                    "active_job_id": self._slot_active_job.get(sid),
+                    "active_generation_id": self._slot_active_gen.get(sid),
+                }
+            return out
 
     def recover_interrupted_jobs(self) -> None:
         """
         Recovers jobs & generations that were mid-flight when the server last exited,
-        preserving all completed images and metadata on disk.
+        preserving all completed images and metadata on disk and clearing stale slot claims.
         """
         jobs = db.list_jobs(limit=100)
         for job in jobs:
             job_id = job["id"]
             changed = False
+            if int(job.get("active_cdp_slot") or 0) != 0:
+                db.release_job_slot(job_id)
+                changed = True
             for gen in job.get("generations") or []:
                 if gen["status"] == "generating":
                     has_file = bool(
@@ -80,6 +118,7 @@ class JobRunner:
                 db.update_job(
                     job_id,
                     status="paused",
+                    active_cdp_slot=0,
                     current_step="Recovered after application restart — click Resume to continue.",
                 )
                 changed = True
@@ -94,20 +133,25 @@ class JobRunner:
             self._paused_jobs.discard(job_id)
             self._cancelled_jobs.discard(job_id)
 
-        # Ensure there are planned turns ready to run
         gens = job.get("generations") or []
         planned = [g for g in gens if g["status"] == "planned"]
         if not planned and job.get("run_mode") == "continuous":
             self._append_continuous_wave(job)
 
+        pref_slot = int(job.get("preferred_cdp_slot") or 0)
+        step_msg = (
+            f"Queued for Chrome Slot #{pref_slot}..."
+            if pref_slot > 0
+            else "Queued for next available Chrome Slot..."
+        )
         db.update_job(
             job_id,
             status="running",
             error="",
-            current_step="Queued for sequential execution...",
+            current_step=step_msg,
         )
         sync_job_manifest(job_id)
-        self._wake_event.set()
+        self.wake_workers()
         return db.get_job(job_id)
 
     def pause_job(self, job_id: int) -> Optional[Dict[str, Any]]:
@@ -116,6 +160,7 @@ class JobRunner:
         db.update_job(
             job_id,
             status="paused",
+            active_cdp_slot=0,
             current_step="Paused by operator. Completed images are safely saved.",
         )
         db.log_activity(f"Job #{job_id} paused by operator.", stage="RUNNER", job_id=job_id)
@@ -134,7 +179,6 @@ class JobRunner:
             return None
         for gen in job.get("generations") or []:
             if gen["status"] in ("planned", "generating"):
-                # Only mark cancelled if it doesn't already have a saved image
                 has_img = bool(gen.get("image_path") and Path(gen["image_path"]).exists())
                 if not has_img:
                     db.update_generation(
@@ -145,6 +189,7 @@ class JobRunner:
         db.update_job(
             job_id,
             status="cancelled",
+            active_cdp_slot=0,
             current_step="Cancelled remaining planned turns. Completed images are preserved.",
         )
         db.log_activity(
@@ -201,8 +246,6 @@ class JobRunner:
             mutated = mutate_generation_variation(job, gen, other_prompts)
             updates.update(mutated)
 
-        # Notice: we DO NOT delete or overwrite the existing image_file on disk here!
-        # It is only replaced atomically once a new image is actually generated.
         with self._lock:
             self._skipped_generations.discard(generation_id)
             self._deferred_generations.discard(generation_id)
@@ -216,7 +259,6 @@ class JobRunner:
         """
         Immediately defers a `planned` or currently `generating` turn to the end of the set
         and kills any hung worker immediately so the pipeline advances to the next shot.
-        (Only `delete` permanently removes a shot.)
         """
         gen = db.get_generation(generation_id)
         if not gen:
@@ -242,7 +284,7 @@ class JobRunner:
             generation_id=generation_id,
         )
         sync_job_manifest(job_id, rewrite_all_sidecars=False)
-        self._wake_event.set()
+        self.wake_workers()
         return updated
 
     def notify_generation_deleted(self, generation_id: int) -> None:
@@ -252,7 +294,7 @@ class JobRunner:
     def retry_generation_metadata(
         self,
         generation_id: int,
-        use_browser_turn: bool = False,
+        use_browser_turn: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         gen = db.get_generation(generation_id)
         if not gen:
@@ -269,11 +311,14 @@ class JobRunner:
                     m, stage="METADATA", job_id=job["id"], generation_id=generation_id
                 ),
             )
+            if meta.get("category") and not job.get("category"):
+                db.update_job(job["id"], category=meta["category"])
             updated = db.update_generation(
                 generation_id,
                 title=meta["title"],
                 caption=meta.get("caption") or meta["title"],
                 description=meta["description"],
+                alt_text=meta.get("alt_text") or "",
                 hashtags=meta.get("hashtags") or "",
                 status="completed",
                 error="",
@@ -293,7 +338,7 @@ class JobRunner:
     def regenerate_all_job_metadata(
         self,
         job_id: int,
-        use_browser_turn: bool = False,
+        use_browser_turn: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         job = db.get_job(job_id)
         if not job:
@@ -309,11 +354,14 @@ class JobRunner:
                             m, stage="METADATA", job_id=job_id, generation_id=gen["id"]
                         ),
                     )
+                    if meta.get("category") and not job.get("category"):
+                        job = db.update_job(job_id, category=meta["category"]) or job
                     db.update_generation(
                         gen["id"],
                         title=meta["title"],
                         caption=meta.get("caption") or meta["title"],
                         description=meta["description"],
+                        alt_text=meta.get("alt_text") or "",
                         hashtags=meta.get("hashtags") or "",
                         status="completed",
                         error="",
@@ -341,10 +389,6 @@ class JobRunner:
             return gen_id in self._skipped_generations
 
     def _resolve_interrupted_turn(self, job_id: int, gen: Dict[str, Any]) -> Optional[bool]:
-        """
-        Handles skipped, deleted, paused, or cancelled turns consistently after
-        generation finishes or raises so no orphan file is saved and loops terminate cleanly.
-        """
         gen_id = int(gen["id"])
         still_exists = db.get_generation(gen_id)
 
@@ -419,7 +463,7 @@ class JobRunner:
         db.create_generations_bulk(job_id, new_turns)
         db.log_activity(
             f"Continuous mode: planned next wave of {len(new_turns)} variation(s) "
-            f"(#{next_index:03d}–#{next_index + len(new_turns) - 1:03d}, cap {session_cap}).",
+            f"(#{next_index}–#{next_index + len(new_turns) - 1}, cap {session_cap}).",
             stage="PLANNER",
             job_id=job_id,
         )
@@ -442,11 +486,11 @@ class JobRunner:
                 continue
             other_idx = int(other["index_num"])
             if md5 and other.get("md5") == md5:
-                return f"Exact byte match with #{other_idx:03d}"
+                return f"Exact byte match with #{other_idx}"
             if dhash and other.get("dhash"):
                 dist = dhash_distance(dhash, other["dhash"])
                 if dist <= threshold:
-                    return f"Near-duplicate of #{other_idx:03d} (dHash distance {dist})"
+                    return f"Near-duplicate of #{other_idx} (dHash distance {dist})"
         return ""
 
     def _is_retryable_turn_error(self, exc: Exception) -> bool:
@@ -458,13 +502,6 @@ class JobRunner:
         return True
 
     def _audit_and_queue_recovery(self, job_id: int) -> int:
-        """
-        Post-run verification & recovery pass:
-        1. Re-queues any completed/metadata_pending turn whose image file is missing or unreadable.
-        2. Re-queues transient failed turns (not auth/aborted/skipped) for one recovery pass.
-        3. Heals remaining metadata_pending turns when their image file on disk is healthy.
-        Returns the number of turns moved back to `planned`.
-        """
         job = db.get_job(job_id)
         if not job or self._should_abort_job(job_id):
             return 0
@@ -500,7 +537,7 @@ class JobRunner:
                         error="Post-run check detected missing/corrupt image file — queued for regeneration.",
                     )
                     db.log_activity(
-                        f"Post-run check: #{idx:03d} output file missing/corrupt — re-queued automatically.",
+                        f"Post-run check: #{idx} output file missing/corrupt — re-queued automatically.",
                         level="WARN",
                         stage="AUDIT",
                         job_id=job_id,
@@ -511,7 +548,7 @@ class JobRunner:
 
                 if status == "metadata_pending" and export_mode != "none":
                     try:
-                        self.retry_generation_metadata(gid, use_browser_turn=False)
+                        self.retry_generation_metadata(gid, use_browser_turn=None)
                     except Exception:
                         pass
 
@@ -527,7 +564,7 @@ class JobRunner:
                         error="Queued for automatic post-run recovery pass.",
                     )
                     db.log_activity(
-                        f"Post-run check: #{idx:03d} previously failed — queued for 1 recovery pass.",
+                        f"Post-run check: #{idx} previously failed — queued for 1 recovery pass.",
                         level="INFO",
                         stage="AUDIT",
                         job_id=job_id,
@@ -539,12 +576,13 @@ class JobRunner:
             sync_job_manifest(job_id, rewrite_all_sidecars=False)
         return requeued
 
-    def _execute_single_generation(self, job: Dict[str, Any], gen: Dict[str, Any]) -> bool:
-        """
-        Executes 1 generation turn (`planned` -> `generating` -> `metadata_pending` -> `completed`).
-        Includes automatic retry with New Chat isolation and Reference Similarity escalation.
-        Returns True if the job should continue to the next turn, or False if paused/cancelled/auth-blocked.
-        """
+    def _execute_single_generation(
+        self,
+        job: Dict[str, Any],
+        gen: Dict[str, Any],
+        slot_id: int = 1,
+        cdp_port: int = CDP_PORT,
+    ) -> bool:
         job_id = job["id"]
         gen_id = gen["id"]
         idx = int(gen["index_num"])
@@ -552,7 +590,6 @@ class JobRunner:
         if self._should_abort_job(job_id):
             return False
 
-        # Pre-flight duplicate prompt check against earlier turns in the same job (lightweight SQL)
         all_fp = db.list_job_generation_fingerprints(job_id)
         prior_same_prompt = [
             g
@@ -571,7 +608,7 @@ class JobRunner:
             )
             gen = db.update_generation(gen_id, **mutated) or gen
             db.log_activity(
-                f"Auto-shifted variation axes on turn #{idx:03d} to prevent duplicate prompt.",
+                f"Auto-shifted variation axes on turn #{idx} to prevent duplicate prompt.",
                 stage="DIVERSITY",
                 job_id=job_id,
                 generation_id=gen_id,
@@ -581,7 +618,7 @@ class JobRunner:
         db.update_job(
             job_id,
             status="running",
-            current_step=f"Generating image #{idx:03d} of {job['counts']['total']}...",
+            current_step=f"[Slot #{slot_id} :{cdp_port}] Generating #{idx} of {job['counts']['total']}...",
         )
 
         ref_obj = gen.get("reference")
@@ -600,13 +637,20 @@ class JobRunner:
         drop_ref_on_retry = bool(settings.get("drop_ref_on_similarity_retry", True))
 
         def _log(msg: str) -> None:
-            db.log_activity(msg, stage="GENERATE", job_id=job_id, generation_id=gen_id)
-            db.update_job(job_id, current_step=f"[#{idx:03d}] {msg}")
+            db.log_activity(
+                f"[Slot #{slot_id}] {msg}",
+                stage="GENERATE",
+                job_id=job_id,
+                generation_id=gen_id,
+            )
+            db.update_job(job_id, current_step=f"[Slot #{slot_id} · #{idx}] {msg}")
 
         with self._lock:
             drop_ref_now = gen_id in self._drop_ref_generations
             recycle_interval = max(5, int(settings.get("cdp_recycle_tab_interval") or 20))
-            should_recycle_tab = self._recycle_next_cdp or (self._cdp_turns_since_recycle >= recycle_interval)
+            turns_since = self._slot_turns_since_recycle.get(slot_id, 0)
+            recycle_next = self._slot_recycle_next.get(slot_id, False)
+            should_recycle_tab = recycle_next or (turns_since >= recycle_interval)
 
         active_prompt = gen["prompt_final"]
         active_ref_path = None if drop_ref_now else ref_path
@@ -629,13 +673,14 @@ class JobRunner:
 
         export_mode_pref = (job.get("metadata_export_mode") or "json").strip().lower()
         use_browser_turn_pref = bool(job.get("use_ai_caption_prompt", True))
-        gemini_key = str(settings.get("gemini_api_key") or "").strip()
+        metadata_provider = str(settings.get("metadata_provider") or "auto").strip().lower()
+        # Option 1A: Browser CDP handles ONLY Prompt #1 (image generation) unless user explicitly picks `browser_cdp`
         metadata_req: Optional[Dict[str, Any]] = None
         if (
             model_id.startswith("chrome-cdp/")
             and export_mode_pref != "none"
             and use_browser_turn_pref
-            and not gemini_key
+            and metadata_provider == "browser_cdp"
         ):
             metadata_req = {
                 "theme": job["theme"],
@@ -643,6 +688,11 @@ class JobRunner:
                 "metadata_language": job.get("metadata_language") or "English",
                 "index_num": idx,
                 "caption_prompt": job.get("caption_prompt") or "",
+                "primary_tag": (job.get("primary_tag") or job["theme"]).strip(),
+                "category": (job.get("category") or "").strip(),
+                "available_categories": None
+                if job.get("category")
+                else (settings.get("picassy_categories") or list(DEFAULT_PICASSY_CATEGORIES)),
                 "timeout_sec": 18.0,
             }
 
@@ -659,21 +709,25 @@ class JobRunner:
                 check_ref_similarity=check_ref_sim,
                 recycle_tab=should_recycle_tab,
                 metadata_request=metadata_req,
+                cdp_port=cdp_port,
+                slot_id=slot_id,
             )
             with self._lock:
-                self._cdp_turns_since_recycle = 1 if should_recycle_tab else (self._cdp_turns_since_recycle + 1)
-                self._recycle_next_cdp = False
+                self._slot_turns_since_recycle[slot_id] = (
+                    1 if should_recycle_tab else (self._slot_turns_since_recycle.get(slot_id, 0) + 1)
+                )
+                self._slot_recycle_next[slot_id] = False
         except ProviderAuthError as auth_err:
             with self._lock:
-                self._recycle_next_cdp = True
-            db.update_generation(gen_id, status="planned", error=str(auth_err))
-            with self._lock:
+                self._slot_recycle_next[slot_id] = True
                 self._paused_jobs.add(job_id)
+            db.update_generation(gen_id, status="planned", error=str(auth_err))
             db.update_job(
                 job_id,
                 status="paused",
+                active_cdp_slot=0,
                 error=str(auth_err),
-                current_step=f"Paused at #{idx:03d}: {auth_err}",
+                current_step=f"Paused at #{idx} (Slot #{slot_id} :{cdp_port}): {auth_err}",
             )
             db.log_activity(str(auth_err), level="WARN", stage="AUTH", job_id=job_id, generation_id=gen_id)
             sync_job_manifest(job_id, rewrite_all_sidecars=False)
@@ -698,7 +752,7 @@ class JobRunner:
             err_msg = f"Deferred (too similar to input: {sim_err}) — rotated axes for end-of-set retry."
             db.update_generation(gen_id, status="failed", error=err_msg, **mutated)
             db.log_activity(
-                f"Turn #{idx:03d} quá giống ảnh input ({sim_err}) — tạm hoãn, chuyển ngay sang ảnh tiếp theo (sẽ chạy lại cuối set).",
+                f"Turn #{idx} quá giống ảnh input ({sim_err}) — tạm hoãn, chuyển ngay sang ảnh tiếp theo (sẽ chạy lại cuối set).",
                 level="WARN",
                 stage="DIVERSITY",
                 job_id=job_id,
@@ -708,7 +762,7 @@ class JobRunner:
             return True
         except Exception as exc:
             with self._lock:
-                self._recycle_next_cdp = True
+                self._slot_recycle_next[slot_id] = True
             interrupted = self._resolve_interrupted_turn(job_id, gen)
             if interrupted is not None:
                 return interrupted
@@ -722,7 +776,7 @@ class JobRunner:
             )
             db.update_generation(gen_id, status="failed", error=note)
             db.log_activity(
-                f"Turn #{idx:03d} tạm dừng/lỗi ({err_msg}) — nhảy thẳng qua ảnh tiếp theo"
+                f"Turn #{idx} tạm dừng/lỗi ({err_msg}) — nhảy thẳng qua ảnh tiếp theo"
                 + (" (sẽ chạy lại cuối set)." if retryable else "."),
                 level="ERROR" if not retryable else "WARN",
                 stage="GENERATE",
@@ -741,7 +795,6 @@ class JobRunner:
             self._deferred_generations.discard(gen_id)
             self._sim_failures.pop(gen_id, None)
 
-        # Refresh job state & settings so format / export_mode / caption_prompt changes take effect immediately
         job = db.get_job(job_id) or job
         settings = db.get_settings(include_secrets=True)
         preferred_fmt = normalize_export_image_format(
@@ -786,7 +839,7 @@ class JobRunner:
             ) or gen
             sync_generation_and_manifest(job_id, gen_id)
             db.log_activity(
-                f"Completed #{idx:03d} -> {saved_file['image_file']} ({saved_file['width']}x{saved_file['height']}, image-only mode)",
+                f"Completed #{idx} -> {saved_file['image_file']} ({saved_file['width']}x{saved_file['height']}, image-only mode)",
                 stage="EXPORT",
                 job_id=job_id,
                 generation_id=gen_id,
@@ -811,13 +864,12 @@ class JobRunner:
         ) or gen
         sync_generation_and_manifest(job_id, gen_id)
 
-        # Write Title, Caption, Description & Hashtags metadata (reuses inline CDP result; no double browser spin if inline ran)
         inline_meta = img_result.get("inline_meta") if isinstance(img_result, dict) else None
         attempted_inline = metadata_req is not None
-        use_browser_turn = bool(job.get("use_ai_caption_prompt", True)) and not attempted_inline
+        use_browser_turn = False if attempted_inline else None
         db.update_job(
             job_id,
-            current_step=f"Generating Pin Caption & Description for #{idx:03d} ({saved_file['image_file']})...",
+            current_step=f"[Slot #{slot_id}] Generating Picassy SEO metadata for #{idx} ({saved_file['image_file']})...",
         )
         try:
             meta = write_generation_metadata(
@@ -828,11 +880,14 @@ class JobRunner:
                 should_abort=lambda: self._should_abort_turn(job_id, gen_id),
                 inline_meta=inline_meta,
             )
+            if meta.get("category") and not job.get("category"):
+                job = db.update_job(job_id, category=meta["category"]) or job
             db.update_generation(
                 gen_id,
                 title=meta["title"],
                 caption=meta.get("caption") or meta["title"],
                 description=meta["description"],
+                alt_text=meta.get("alt_text") or "",
                 hashtags=meta.get("hashtags") or "",
                 status="completed",
                 error="",
@@ -840,7 +895,7 @@ class JobRunner:
             )
             sync_generation_and_manifest(job_id, gen_id)
             db.log_activity(
-                f"Completed #{idx:03d} -> {saved_file['image_file']} + {export_mode.upper()} metadata ({saved_file['width']}x{saved_file['height']})",
+                f"Completed #{idx} -> {saved_file['image_file']} + {export_mode.upper()} Picassy SEO ({saved_file['width']}x{saved_file['height']})",
                 stage="EXPORT",
                 job_id=job_id,
                 generation_id=gen_id,
@@ -853,7 +908,7 @@ class JobRunner:
             )
             sync_generation_and_manifest(job_id, gen_id)
             db.log_activity(
-                f"Image #{idx:03d} saved, but metadata needs retry: {meta_exc}",
+                f"Image #{idx} saved, but metadata needs retry: {meta_exc}",
                 level="WARN",
                 stage="METADATA",
                 job_id=job_id,
@@ -862,7 +917,7 @@ class JobRunner:
 
         return True
 
-    def _run_job(self, job_id: int) -> None:
+    def _run_job(self, job_id: int, slot_id: int = 1, cdp_port: int = CDP_PORT) -> None:
         settings = db.get_settings(include_secrets=False)
         raw_rounds = settings.get("max_turn_retries")
         max_recovery_rounds = max(0, min(4, int(raw_rounds if raw_rounds is not None else 2)))
@@ -881,14 +936,12 @@ class JobRunner:
                 gens = job.get("generations") or []
                 any_generating = any(g["status"] == "generating" for g in gens)
                 if any_generating:
-                    time.sleep(2.0)
+                    time.sleep(1.5)
                     continue
-                # Check if continuous mode should schedule another wave
                 if job.get("run_mode") == "continuous" and not self._should_abort_job(job_id):
                     added = self._append_continuous_wave(job)
                     if added > 0:
                         continue
-                # Post-run check & end-of-set recovery pass for deferred/failed turns or missing/corrupt files
                 if recovery_rounds < max_recovery_rounds and not self._should_abort_job(job_id):
                     recovery_rounds += 1
                     requeued = self._audit_and_queue_recovery(job_id)
@@ -903,17 +956,20 @@ class JobRunner:
                 break
 
             with self._lock:
-                self._active_job_id = job_id
-                self._active_generation_id = next_gen["id"]
+                self._slot_active_job[slot_id] = job_id
+                self._slot_active_gen[slot_id] = next_gen["id"]
 
-            should_continue = self._execute_single_generation(job, next_gen)
+            should_continue = self._execute_single_generation(
+                job, next_gen, slot_id=slot_id, cdp_port=cdp_port
+            )
             with self._lock:
-                self._active_generation_id = None
+                self._slot_active_gen[slot_id] = None
 
             if not should_continue:
                 break
 
-        # Finalize job status if not paused or cancelled
+        db.release_job_slot(job_id, expected_slot=slot_id)
+
         final_job = db.get_job(job_id)
         if not final_job:
             return
@@ -927,6 +983,7 @@ class JobRunner:
             db.update_job(
                 job_id,
                 status="completed",
+                active_cdp_slot=0,
                 current_step="Run finished with no remaining shots in plan.",
                 completed_at=now_iso(),
             )
@@ -934,6 +991,7 @@ class JobRunner:
             db.update_job(
                 job_id,
                 status="completed",
+                active_cdp_slot=0,
                 current_step=f"Completed {counts['completed']} image(s) in {folder_name}.",
                 completed_at=now_iso(),
             )
@@ -948,6 +1006,7 @@ class JobRunner:
             db.update_job(
                 job_id,
                 status="completed_with_errors",
+                active_cdp_slot=0,
                 current_step=f"Finished ({', '.join(notes)}); pending/failed items can be retried individually.",
                 completed_at=now_iso(),
             )
@@ -955,37 +1014,80 @@ class JobRunner:
             db.update_job(
                 job_id,
                 status="failed",
+                active_cdp_slot=0,
                 current_step=f"All {counts['failed']} turn(s) failed. Check provider status and retry.",
             )
         elif counts["cancelled"] > 0:
             db.update_job(
                 job_id,
                 status="cancelled",
+                active_cdp_slot=0,
                 current_step=f"All {counts['cancelled']} turn(s) were skipped/cancelled.",
             )
         else:
             db.update_job(
                 job_id,
                 status="completed",
+                active_cdp_slot=0,
                 current_step=f"Finished set in {folder_name}.",
                 completed_at=now_iso(),
             )
         sync_job_manifest(job_id)
 
-    def _worker_loop(self) -> None:
+    def _slot_worker_loop(self, slot_id: int) -> None:
         while not self._stop_worker:
+            with self._wake_cond:
+                seen_seq = self._wake_seq
             try:
-                next_job_id = db.get_next_running_job_id()
+                settings = db.get_settings(include_secrets=False)
+                slots = normalize_cdp_slots(settings.get("cdp_slots"))
+                my_cfg = next((s for s in slots if int(s["slot_id"]) == slot_id), slots[0])
+                if not my_cfg.get("enabled", False):
+                    with self._wake_cond:
+                        self._wake_cond.wait_for(
+                            lambda: self._wake_seq != seen_seq or self._stop_worker,
+                            timeout=1.6,
+                        )
+                    continue
+
+                if slot_id > 1:
+                    time.sleep((slot_id - 1) * 0.45)
+
+                slot_statuses = list_cdp_slots_status(slots=slots, force=False)
+                my_st = next((s for s in slot_statuses if int(s["slot_id"]) == slot_id), None)
+                slot_online = bool(my_st and my_st.get("connected"))
+                any_enabled_online = any(
+                    s.get("enabled", False) and s.get("connected") for s in slot_statuses
+                )
+                allow_auto_cdp = slot_online or (slot_id == 1 and not any_enabled_online)
+
+                next_job_id = db.claim_next_running_job_for_slot(
+                    slot_id=slot_id,
+                    slot_online=slot_online,
+                    allow_auto_cdp=allow_auto_cdp,
+                    allow_api_jobs=True,
+                )
                 if next_job_id and not self._should_abort_job(next_job_id):
-                    self._run_job(next_job_id)
-                    with self._lock:
-                        self._active_job_id = None
+                    try:
+                        self._run_job(
+                            next_job_id,
+                            slot_id=slot_id,
+                            cdp_port=int(my_cfg["port"]),
+                        )
+                    finally:
+                        with self._lock:
+                            self._slot_active_job[slot_id] = None
+                            self._slot_active_gen[slot_id] = None
+                        db.release_job_slot(next_job_id, expected_slot=slot_id)
                     continue
             except Exception as exc:
-                logger.exception("JobRunner worker loop error: %s", exc)
+                logger.exception("JobRunner slot #%s worker error: %s", slot_id, exc)
 
-            self._wake_event.wait(timeout=1.5)
-            self._wake_event.clear()
+            with self._wake_cond:
+                self._wake_cond.wait_for(
+                    lambda: self._wake_seq != seen_seq or self._stop_worker,
+                    timeout=1.5,
+                )
 
 
 runner = JobRunner()

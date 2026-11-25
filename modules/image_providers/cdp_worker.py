@@ -267,6 +267,8 @@ def run_cdp_image_turn_isolated(
     watchdog_sec: float = 30.0,
     recycle_tab: bool = False,
     metadata_request: Optional[Dict[str, Any]] = None,
+    cdp_port: Optional[int] = None,
+    slot_id: int = 1,
 ) -> Dict[str, Any]:
     tmp = tempfile.NamedTemporaryFile(prefix="_studio_cdp_", suffix=".bin", delete=False)
     bytes_path = tmp.name
@@ -284,6 +286,8 @@ def run_cdp_image_turn_isolated(
                 "check_ref_similarity": check_ref_similarity,
                 "recycle_tab": recycle_tab,
                 "metadata_request": metadata_request,
+                "cdp_port": cdp_port,
+                "slot_id": slot_id,
                 "bytes_out_path": bytes_path,
             },
             watchdog_sec=watchdog_sec,
@@ -312,6 +316,10 @@ def run_cdp_metadata_turn_isolated(
     metadata_language: str,
     index_num: int,
     caption_prompt: str = "",
+    primary_tag: str = "",
+    category: str = "",
+    available_categories: Optional[list[str]] = None,
+    cdp_port: Optional[int] = None,
     timeout_sec: float = 15.0,
     should_abort: Optional[Callable[[], bool]] = None,
 ) -> Optional[Dict[str, str]]:
@@ -324,6 +332,10 @@ def run_cdp_metadata_turn_isolated(
             "metadata_language": metadata_language,
             "index_num": index_num,
             "caption_prompt": caption_prompt,
+            "primary_tag": primary_tag,
+            "category": category,
+            "available_categories": available_categories,
+            "cdp_port": cdp_port,
             "timeout_sec": timeout_sec,
         },
         watchdog_sec=16.0,
@@ -353,6 +365,8 @@ def _worker_entrypoint() -> None:
                 check_ref_similarity=bool(payload.get("check_ref_similarity", True)),
                 recycle_tab=bool(payload.get("recycle_tab", False)),
                 metadata_request=payload.get("metadata_request"),
+                cdp_port=payload.get("cdp_port"),
+                slot_id=int(payload.get("slot_id") or 1),
             )
             raw_bytes = result.pop("raw_bytes")
             Path(payload["bytes_out_path"]).write_bytes(raw_bytes)
@@ -371,6 +385,10 @@ def _worker_entrypoint() -> None:
                 caption_prompt=payload.get("caption_prompt") or "",
                 timeout_sec=float(payload.get("timeout_sec") or 15.0),
                 heartbeat_fn=lambda: _emit("heartbeat"),
+                cdp_port=payload.get("cdp_port"),
+                primary_tag=payload.get("primary_tag") or "",
+                category=payload.get("category") or "",
+                available_categories=payload.get("available_categories"),
             )
             _emit("done", meta=meta)
             return

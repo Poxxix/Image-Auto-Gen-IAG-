@@ -6,6 +6,9 @@ import {
   Key,
   Trash,
   ShieldCheck,
+  ArrowsClockwise,
+  Plus,
+  X,
 } from "@phosphor-icons/react"
 import { StudioPanel, StudioButton, StudioBadge } from "@/components/shared/StudioPrimitives"
 import { BrandIcon } from "@/components/shared/BrandIcon"
@@ -18,20 +21,52 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import type {
+  CdpSlotStatus,
   CdpStatus,
+  FilenameStyle,
+  MetadataProviderType,
+  MetadataVisionMode,
   ProviderModel,
   StudioSettings,
 } from "@/services/studioApi"
+
+type CdpSlotConfig = {
+  slot_id: number
+  port: number
+  label: string
+  enabled: boolean
+}
+
+const DEFAULT_PICASSY_CATEGORIES = [
+  "AI Prompts",
+  "Anime",
+  "Art",
+  "Fashions",
+  "Nail",
+  "Photography Topics",
+  "Posters & Visuals",
+  "Tattoos",
+  "Wallpaper",
+]
+
+const DEFAULT_SLOTS: CdpSlotConfig[] = [
+  { slot_id: 1, port: 9222, label: "Slot 1 (Master)", enabled: true },
+  { slot_id: 2, port: 9223, label: "Slot 2", enabled: false },
+  { slot_id: 3, port: 9224, label: "Slot 3", enabled: false },
+  { slot_id: 4, port: 9225, label: "Slot 4", enabled: false },
+]
 
 export interface SettingsPanelProps {
   settings: StudioSettings | null
   providers: ProviderModel[]
   cdp: CdpStatus | null
+  cdpSlots?: CdpSlotStatus[]
+  picassyCategories?: string[]
   aspectRatios: string[]
   metadataLanguages: string[]
   onSaveSettings: (updates: Partial<StudioSettings>) => Promise<void>
   onPickExportFolder: () => Promise<string | null>
-  onLaunchCdp: (engine?: string) => Promise<void>
+  onLaunchCdp: (engine?: string, forceRestart?: boolean, slotId?: number) => Promise<void>
   onResetWorkspace: (opts: {
     clear_references: boolean
     delete_exports: boolean
@@ -42,6 +77,8 @@ export function SettingsPanel({
   settings,
   providers,
   cdp,
+  cdpSlots = [],
+  picassyCategories = DEFAULT_PICASSY_CATEGORIES,
   aspectRatios,
   metadataLanguages,
   onSaveSettings,
@@ -58,8 +95,17 @@ export function SettingsPanel({
     default_metadata_language: settings?.default_metadata_language || "English",
     default_metadata_export_mode:
       settings?.default_metadata_export_mode || "json",
+    default_filename_style: settings?.default_filename_style || "picassy_slug",
     default_caption_prompt: settings?.default_caption_prompt || "",
     use_ai_caption_prompt: settings?.use_ai_caption_prompt ?? true,
+    metadata_provider: settings?.metadata_provider || "auto",
+    metadata_model: settings?.metadata_model || "gemini-2.0-flash",
+    metadata_api_base_url: settings?.metadata_api_base_url || "",
+    metadata_api_key: settings?.metadata_api_key || "",
+    metadata_vision_mode: settings?.metadata_vision_mode || "thumbnail_512",
+    picassy_categories:
+      settings?.picassy_categories || picassyCategories || DEFAULT_PICASSY_CATEGORIES,
+    cdp_slots: settings?.cdp_slots || DEFAULT_SLOTS,
     optimize_prompt_english: settings?.optimize_prompt_english ?? true,
     remove_watermark: settings?.remove_watermark ?? true,
     fresh_chat_per_turn: settings?.fresh_chat_per_turn ?? true,
@@ -76,7 +122,8 @@ export function SettingsPanel({
   })
 
   const [saving, setSaving] = React.useState(false)
-  const [launching, setLaunching] = React.useState(false)
+  const [launchingSlotId, setLaunchingSlotId] = React.useState<number | null>(null)
+  const [newCategoryInput, setNewCategoryInput] = React.useState("")
   const [clearRefs, setClearRefs] = React.useState(false)
   const [deleteExports, setDeleteExports] = React.useState(false)
   const [resetting, setResetting] = React.useState(false)
@@ -86,6 +133,9 @@ export function SettingsPanel({
       setForm((prev) => ({
         ...prev,
         ...settings,
+        cdp_slots: settings.cdp_slots || prev.cdp_slots || DEFAULT_SLOTS,
+        picassy_categories:
+          settings.picassy_categories || prev.picassy_categories || DEFAULT_PICASSY_CATEGORIES,
       }))
     }
   }, [settings])
@@ -99,13 +149,38 @@ export function SettingsPanel({
     }
   }
 
-  const handleLaunch = async (engine = "gemini") => {
-    setLaunching(true)
+  const handleLaunchSlot = async (
+    slotId = 1,
+    forceRestart = false,
+    engine = "gemini"
+  ) => {
+    setLaunchingSlotId(slotId)
     try {
-      await onLaunchCdp(engine)
+      await onLaunchCdp(engine, forceRestart, slotId)
     } finally {
-      setLaunching(false)
+      setLaunchingSlotId(null)
     }
+  }
+
+  const handleAddCategory = () => {
+    const cleaned = newCategoryInput.trim()
+    if (!cleaned) return
+    const existing = form.picassy_categories || DEFAULT_PICASSY_CATEGORIES
+    if (existing.some((c) => c.toLowerCase() === cleaned.toLowerCase())) {
+      setNewCategoryInput("")
+      return
+    }
+    setForm((f) => ({ ...f, picassy_categories: [...existing, cleaned] }))
+    setNewCategoryInput("")
+  }
+
+  const handleRemoveCategory = (cat: string) => {
+    const existing = form.picassy_categories || DEFAULT_PICASSY_CATEGORIES
+    if (existing.length <= 1) return
+    setForm((f) => ({
+      ...f,
+      picassy_categories: existing.filter((c) => c !== cat),
+    }))
   }
 
   const handleReset = async () => {
@@ -152,41 +227,106 @@ export function SettingsPanel({
         {/* Left 7 Columns: AI Providers & Credentials */}
         <div className="lg:col-span-7 flex flex-col gap-6">
           <StudioPanel
-            eyebrow="BROWSER CDP BRIDGE (:9222)"
-            title="Local AI Browser Session"
+            eyebrow="4-SLOT CHROME CDP POOL (:9222–:9225 · MAX 4 ON 16 GB RAM)"
+            title="Multi-Job Browser Sessions (1 Job = 1 Slot)"
           >
             <div className="flex flex-col gap-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl bg-white/[0.03] p-4 ring-1 ring-white/[0.08]">
-                <div className="flex items-center gap-3.5">
-                  <span className="flex size-11 items-center justify-center rounded-2xl bg-white/[0.06] text-white ring-1 ring-white/[0.12]">
-                    <BrandIcon name="gemini" size={22} />
-                  </span>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium text-white">
-                        Chrome AI Master (:9222)
-                      </p>
-                      <StudioBadge
-                        tone={isCdpOnline ? "emerald" : "amber"}
-                        label={isCdpOnline ? "Connected" : "Standby"}
-                      />
-                    </div>
-                    <p className="mt-0.5 text-xs text-[#9ca3af]">
-                      {isCdpOnline
-                        ? `${cdp?.browser || "Chrome"} · Open tabs: ${(cdp?.open_engines || []).join(", ") || "ready"}`
-                        : "Launch Chrome (:9222) and sign into Gemini, ChatGPT, or Grok."}
-                    </p>
-                  </div>
-                </div>
+              <p className="text-xs leading-relaxed text-[#9ca3af]">
+                Enable up to 4 isolated Chrome profiles (:9222..:9225) to run 4 independent image sets in parallel. If one account logs out or hits rate-limit, only its Job pauses while other slots keep running. Click <strong>Save Studio Settings</strong> after toggling slot enablement.
+              </p>
 
-                <StudioButton
-                  variant="secondary"
-                  loading={launching}
-                  onClick={() => handleLaunch("gemini")}
-                  icon={<TerminalWindow size={15} weight="light" />}
-                >
-                  {launching ? "Launching…" : "Launch Browser (:9222)"}
-                </StudioButton>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {(form.cdp_slots || DEFAULT_SLOTS).map((slotCfg) => {
+                  const live = cdpSlots.find((s) => s.slot_id === slotCfg.slot_id)
+                  const online = Boolean(
+                    live?.connected || (slotCfg.slot_id === 1 && isCdpOnline)
+                  )
+                  const isBusy = launchingSlotId === slotCfg.slot_id
+                  return (
+                    <div
+                      key={slotCfg.slot_id}
+                      className="flex flex-col gap-2.5 rounded-2xl bg-white/[0.03] p-3.5 ring-1 ring-white/[0.08]"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono-tech text-[11px] font-semibold text-amber-300">
+                            :{slotCfg.port}
+                          </span>
+                          <input
+                            type="text"
+                            value={slotCfg.label}
+                            onChange={(e) =>
+                              setForm((f) => ({
+                                ...f,
+                                cdp_slots: (f.cdp_slots || DEFAULT_SLOTS).map((item) =>
+                                  item.slot_id === slotCfg.slot_id
+                                    ? { ...item, label: e.target.value }
+                                    : item
+                                ),
+                              }))
+                            }
+                            className="h-7 min-w-0 flex-1 rounded-lg bg-black/30 px-2 text-xs text-white ring-1 ring-white/[0.08]"
+                          />
+                        </div>
+                        <Switch
+                          checked={slotCfg.enabled}
+                          onCheckedChange={(checked) =>
+                            setForm((f) => ({
+                              ...f,
+                              cdp_slots: (f.cdp_slots || DEFAULT_SLOTS).map((item) =>
+                                item.slot_id === slotCfg.slot_id
+                                  ? { ...item, enabled: checked }
+                                  : item
+                              ),
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 text-[10px]">
+                        <StudioBadge
+                          tone={
+                            live?.active_job_id
+                              ? "sky"
+                              : online
+                                ? "emerald"
+                                : "amber"
+                          }
+                          label={
+                            live?.active_job_id
+                              ? `Running Set #${live.active_job_id}`
+                              : online
+                                ? "Online"
+                                : "Standby"
+                          }
+                        />
+                        <div className="flex items-center gap-1.5">
+                          <StudioButton
+                            variant="secondary"
+                            loading={isBusy}
+                            onClick={() => handleLaunchSlot(slotCfg.slot_id, false)}
+                            icon={<TerminalWindow size={12} weight="light" />}
+                            className="h-7 px-2.5 text-[11px]"
+                          >
+                            {online ? "Focus" : "Launch"}
+                          </StudioButton>
+                          {online && (
+                            <StudioButton
+                              variant="secondary"
+                              loading={isBusy}
+                              onClick={() => handleLaunchSlot(slotCfg.slot_id, true)}
+                              icon={<ArrowsClockwise size={12} weight="light" />}
+                              className="h-7 px-2 text-[11px]"
+                              title={`Restart Chrome Slot #${slotCfg.slot_id} (:${slotCfg.port})`}
+                            >
+                              Restart
+                            </StudioButton>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -285,9 +425,202 @@ export function SettingsPanel({
                   />
                 </div>
 
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
+                  <div>
+                    <p className="text-xs font-medium text-white">
+                      Default Filename Style
+                    </p>
+                    <p className="text-[11px] text-[#9ca3af]">
+                      Picassy SEO format (<code className="text-amber-300">keyword-slug-1</code>) vs legacy (<code className="text-[#d1d5db]">001_slug</code>).
+                    </p>
+                  </div>
+                  <Select
+                    value={form.default_filename_style || "picassy_slug"}
+                    onValueChange={(v) =>
+                      v &&
+                      setForm((f) => ({
+                        ...f,
+                        default_filename_style: v as FilenameStyle,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-10 w-56 rounded-xl bg-white/[0.04] px-3 text-xs text-white ring-1 ring-white/[0.08]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="picassy_slug">Picassy (keyword-1, 2...)</SelectItem>
+                      <SelectItem value="studio_seq">Studio Legacy (001_slug)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Option 1A Small Metadata Model Router */}
+                <div className="rounded-xl bg-sky-500/[0.05] p-3.5 ring-1 ring-sky-400/20 flex flex-col gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-sky-200">
+                      Option 1A · Small Metadata AI Engine (Offloads Prompt #2 from Chrome CDP)
+                    </p>
+                    <p className="text-[11px] text-[#9ca3af]">
+                      Keep Chrome CDP focused 100% on high-quality image generation (Prompt #1) while a cheap Vision/Text model writes Picassy Title (≤60), Description (≤160), and Alt Text (100–125).
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
+                        Metadata Router
+                      </label>
+                      <Select
+                        value={form.metadata_provider || "auto"}
+                        onValueChange={(v) =>
+                          v &&
+                          setForm((f) => ({
+                            ...f,
+                            metadata_provider: v as MetadataProviderType,
+                          }))
+                        }
+                      >
+                        <SelectTrigger className="h-9 rounded-xl bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.08]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">Auto (API Key → Template)</SelectItem>
+                          <SelectItem value="gemini">Google Gemini REST</SelectItem>
+                          <SelectItem value="openai">OpenAI Mini/Nano REST</SelectItem>
+                          <SelectItem value="openai_compatible">OpenAI-Compatible (Ollama/OpenRouter)</SelectItem>
+                          <SelectItem value="template">Instant Grammatical (0 Token)</SelectItem>
+                          <SelectItem value="browser_cdp">Browser CDP Turn #2 (Slow/High Quota)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
+                        Small Model ID
+                      </label>
+                      <input
+                        type="text"
+                        value={form.metadata_model || ""}
+                        onChange={(e) =>
+                          setForm((f) => ({ ...f, metadata_model: e.target.value }))
+                        }
+                        placeholder="gemini-2.0-flash / gpt-4o-mini"
+                        className="h-9 rounded-xl bg-black/30 px-2.5 font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
+                        Vision Payload Mode
+                      </label>
+                      <Select
+                        value={form.metadata_vision_mode || "thumbnail_512"}
+                        onValueChange={(v) =>
+                          v &&
+                          setForm((f) => ({
+                            ...f,
+                            metadata_vision_mode: v as MetadataVisionMode,
+                          }))
+                        }
+                      >
+                        <SelectTrigger className="h-9 rounded-xl bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.08]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="thumbnail_512">512px JPEG Vision (~35KB)</SelectItem>
+                          <SelectItem value="text_only">Text Prompt Only (0 Image Token)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
+                        OpenAI-Compatible Base URL (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={form.metadata_api_base_url || ""}
+                        onChange={(e) =>
+                          setForm((f) => ({
+                            ...f,
+                            metadata_api_base_url: e.target.value,
+                          }))
+                        }
+                        placeholder="https://openrouter.ai/api/v1 or http://127.0.0.1:11434/v1"
+                        className="h-9 rounded-xl bg-black/30 px-2.5 font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
+                        Metadata API Key Pool (1 key per line or comma)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={form.metadata_api_key || ""}
+                        onChange={(e) =>
+                          setForm((f) => ({ ...f, metadata_api_key: e.target.value }))
+                        }
+                        placeholder="Leave blank to reuse Gemini/OpenAI keys below, or paste multiple keys for auto-rotation..."
+                        className="rounded-xl bg-black/30 p-2 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Configurable Picassy Categories List */}
+                <div className="flex flex-col gap-2 border-t border-white/[0.06] pt-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#d1d5db]">
+                      Picassy Categories ({(form.picassy_categories || DEFAULT_PICASSY_CATEGORIES).length})
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={newCategoryInput}
+                        onChange={(e) => setNewCategoryInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault()
+                            handleAddCategory()
+                          }
+                        }}
+                        placeholder="New category..."
+                        className="h-7 w-36 rounded-lg bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.08]"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCategory}
+                        className="inline-flex h-7 items-center gap-1 rounded-lg bg-white/[0.08] px-2.5 text-[11px] font-medium text-white hover:bg-white/[0.15] cursor-pointer"
+                      >
+                        <Plus size={12} /> Add
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(form.picassy_categories || DEFAULT_PICASSY_CATEGORIES).map((cat) => (
+                      <span
+                        key={cat}
+                        className="inline-flex items-center gap-1 rounded-full bg-white/[0.05] px-2.5 py-1 text-[11px] text-[#e5e7eb] ring-1 ring-white/[0.08]"
+                      >
+                        {cat}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveCategory(cat)}
+                          title={`Remove ${cat}`}
+                          className="rounded-full p-0.5 text-[#9ca3af] hover:bg-rose-500/20 hover:text-rose-300 cursor-pointer"
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-xs text-[#9ca3af]">
-                    Send follow-up prompt in AI Browser (:9222) after each image by default
+                    Enable AI Picassy Metadata after each image (uses Option 1A Engine above unless set to Browser CDP)
                   </span>
                   <Switch
                     checked={form.use_ai_caption_prompt ?? true}

@@ -42,10 +42,172 @@ def ensure_directories() -> None:
 
 ensure_directories()
 
-# Chrome DevTools Protocol (CDP) Configuration for Browser AI Providers
+# Chrome DevTools Protocol (CDP) Configuration for Multi-Slot Browser AI Pool (16 GB RAM max 4 slots)
 CDP_HOST = "127.0.0.1"
 CDP_PORT = 9222
 CDP_ENDPOINT = f"http://{CDP_HOST}:{CDP_PORT}"
+MAX_CDP_SLOTS = 4
+
+DEFAULT_CDP_SLOTS: List[Dict[str, Any]] = [
+    {
+        "slot_id": 1,
+        "label": "Chrome #1 (Main)",
+        "port": 9222,
+        "profile_name": "chrome_ai_master",
+        "enabled": True,
+    },
+    {
+        "slot_id": 2,
+        "label": "Chrome #2",
+        "port": 9223,
+        "profile_name": "chrome_slot_2",
+        "enabled": False,
+    },
+    {
+        "slot_id": 3,
+        "label": "Chrome #3",
+        "port": 9224,
+        "profile_name": "chrome_slot_3",
+        "enabled": False,
+    },
+    {
+        "slot_id": 4,
+        "label": "Chrome #4",
+        "port": 9225,
+        "profile_name": "chrome_slot_4",
+        "enabled": False,
+    },
+]
+
+# Fixed Picassy Categories (extensible via Studio Settings)
+DEFAULT_PICASSY_CATEGORIES: List[str] = [
+    "AI Prompts",
+    "Anime",
+    "Art",
+    "Fashions",
+    "Nail",
+    "Photography Topics",
+    "Posters & Visuals",
+    "Tattoos",
+    "Wallpaper",
+]
+
+FILENAME_STYLES: List[str] = [
+    "picassy_slug",
+    "studio_seq",
+]
+
+METADATA_PROVIDERS: List[str] = [
+    "auto",
+    "gemini",
+    "openai",
+    "openai_compatible",
+    "browser_cdp",
+    "template",
+]
+
+METADATA_VISION_MODES: List[str] = [
+    "thumbnail_512",
+    "text_only",
+]
+
+
+def normalize_filename_style(
+    value: Optional[str],
+    default: str = "picassy_slug",
+    strict: bool = False,
+) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    if raw in FILENAME_STYLES:
+        return raw
+    if strict:
+        raise ValueError(f"Unsupported filename_style '{value}'.")
+    return default
+
+
+def normalize_picassy_categories(raw_categories: Any) -> List[str]:
+    if isinstance(raw_categories, str):
+        items = [line.strip() for line in raw_categories.replace(",", "\n").splitlines()]
+    elif isinstance(raw_categories, list):
+        items = [str(item).strip() for item in raw_categories]
+    else:
+        items = []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item:
+            continue
+        low = item.lower()
+        if low not in seen:
+            seen.add(low)
+            out.append(item)
+    return out or list(DEFAULT_PICASSY_CATEGORIES)
+
+
+def normalize_cdp_slots(raw_slots: Any) -> List[Dict[str, Any]]:
+    by_id: Dict[int, Dict[str, Any]] = {}
+    if isinstance(raw_slots, list):
+        for entry in raw_slots:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                sid = int(entry.get("slot_id") or 0)
+            except Exception:
+                continue
+            if 1 <= sid <= MAX_CDP_SLOTS:
+                by_id[sid] = entry
+
+    normalized: List[Dict[str, Any]] = []
+    for default_slot in DEFAULT_CDP_SLOTS:
+        sid = int(default_slot["slot_id"])
+        raw = by_id.get(sid) or {}
+        label = str(raw.get("label") or default_slot["label"]).strip()[:48] or default_slot["label"]
+        try:
+            port = int(raw.get("port") or default_slot["port"])
+        except Exception:
+            port = int(default_slot["port"])
+        if port < 9000 or port > 65000:
+            port = int(default_slot["port"])
+        profile_name = str(raw.get("profile_name") or default_slot["profile_name"]).strip()
+        if not profile_name or "/" in profile_name or "\\" in profile_name or ".." in profile_name:
+            profile_name = str(default_slot["profile_name"])
+        enabled = bool(raw.get("enabled")) if "enabled" in raw else bool(default_slot["enabled"])
+        normalized.append(
+            {
+                "slot_id": sid,
+                "label": label,
+                "port": port,
+                "profile_name": profile_name,
+                "enabled": enabled,
+            }
+        )
+    return normalized
+
+
+def get_slot_profile_dir(slot_cfg: Dict[str, Any]) -> Path:
+    profile_name = str(slot_cfg.get("profile_name") or "chrome_ai_master").strip()
+    if not profile_name or "/" in profile_name or "\\" in profile_name or ".." in profile_name:
+        profile_name = "chrome_ai_master"
+    return BROWSER_PROFILES_DIR / profile_name
+
+
+def split_api_keys(raw_value: Optional[str]) -> List[str]:
+    if not raw_value:
+        return []
+    parts = [
+        tok.strip()
+        for line in str(raw_value).splitlines()
+        for tok in line.split(",")
+    ]
+    seen: set[str] = set()
+    out: List[str] = []
+    for p in parts:
+        if p and "••••" not in p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 # Supported Aspect Ratios
 ASPECT_RATIOS: Dict[str, Tuple[int, int]] = {
@@ -112,9 +274,10 @@ def normalize_export_image_format(
     return default
 
 DEFAULT_CAPTION_PROMPT: str = (
-    "Write a catchy, aesthetic Pinterest Pin Title, an engaging social hook Caption, "
-    "a 2-3 sentence SEO-friendly Description that inspires saves and clicks, and 6-10 relevant "
-    "trending Hashtags tailored to this image for uploading to Pinterest and visual platforms."
+    "Write natural, grammatically clean SEO image metadata tailored to this image: "
+    "a concise Title (max 60 chars, starting directly with the exact primary keyword), "
+    "a natural Description (max 160 chars, containing the primary keyword naturally), "
+    "and a faithful Screen-Reader Alt Text (100-125 chars, describing the visible scene)."
 )
 
 CAPTION_STYLE_PRESETS: List[Dict[str, str]] = [
@@ -766,8 +929,16 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "default_aspect_ratio": "1:1",
     "default_metadata_language": "English",
     "default_metadata_export_mode": "json",  # json | caption | none
+    "default_filename_style": "picassy_slug",  # picassy_slug | studio_seq
     "default_caption_prompt": DEFAULT_CAPTION_PROMPT,
     "use_ai_caption_prompt": True,
+    "metadata_provider": "auto",  # auto | gemini | openai | openai_compatible | browser_cdp | template
+    "metadata_model": "gemini-2.0-flash",
+    "metadata_api_base_url": "",
+    "metadata_api_key": "",
+    "metadata_vision_mode": "thumbnail_512",  # thumbnail_512 | text_only
+    "picassy_categories": list(DEFAULT_PICASSY_CATEGORIES),
+    "cdp_slots": [dict(slot) for slot in DEFAULT_CDP_SLOTS],
     "optimize_prompt_english": True,
     "remove_watermark": True,
     "fresh_chat_per_turn": True,
@@ -778,7 +949,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "drop_ref_on_similarity_retry": True,
     "export_root_dir": str(EXPORTS_DIR),
     "export_image_format": "original",   # original | png | jpg | webp
-    "max_concurrency": 1,
+    "max_concurrency": 4,
     "dhash_warning_threshold": 6,
     "gemini_api_key": "",
     "openai_api_key": "",
@@ -789,6 +960,7 @@ SENSITIVE_SETTING_KEYS = {
     "gemini_api_key",
     "openai_api_key",
     "pinterest_access_token",
+    "metadata_api_key",
 }
 
 
