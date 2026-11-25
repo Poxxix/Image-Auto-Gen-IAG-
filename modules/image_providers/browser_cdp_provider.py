@@ -36,6 +36,42 @@ class ProviderAuthError(RuntimeError):
     """Raised when the browser session or API provider requires sign-in or intervention."""
 
 
+class ProviderToolUnavailableError(RuntimeError):
+    """Raised when the AI chat session explicitly reports its image generation tool is unavailable."""
+
+
+_TOOL_UNAVAILABLE_PATTERNS = (
+    "do not have access to an image generation",
+    "do not have access to an active image",
+    "do not currently have access to an active image",
+    "do not have an active image generation",
+    "no image generation tool",
+    "image generation tool is currently unavailable",
+    "image generation tool is unavailable",
+    "image generation tools are currently unavailable",
+    "image generation tools are unavailable",
+    "image generation tool is not available",
+    "image generation tools are not available",
+    "cannot generate or output images",
+    "cannot generate or output a visual image",
+    "cannot generate or output visual images",
+    "unable to generate or output",
+    "unable to generate a new image",
+    "unable to generate new images",
+    "cannot directly generate or render images",
+    "cannot directly output a visual image",
+    "không có quyền truy cập vào công cụ tạo",
+    "công cụ tạo hình ảnh hiện không khả dụng",
+)
+
+
+def _is_tool_unavailable_refusal(text: str) -> bool:
+    low = " ".join((text or "").lower().split())
+    if not low:
+        return False
+    return any(pat in low for pat in _TOOL_UNAVAILABLE_PATTERNS)
+
+
 class ReferenceTooSimilarError(RuntimeError):
     """Raised when the generated candidate closely clones the input reference image."""
 
@@ -640,66 +676,175 @@ def _attach_reference_image(
     return False
 
 
+def _ensure_gemini_fast_mode(page: Any, log_fn: Callable[[str], None]) -> None:
+    """
+    Checks Gemini's active model switcher pill and switches away from `Thinking` / `Pro`
+    to `Fast` / `Flash` when needed so image generation tools stay reliably attached.
+    """
+    try:
+        current_mode = page.evaluate(
+            """() => {
+                const selectors = [
+                    'bard-mode-switcher button',
+                    '[data-test-id*="bard-mode-menu-button"]',
+                    'button[aria-label*="mode" i]',
+                    'button.input-area-switch'
+                ];
+                for (const sel of selectors) {
+                    const btns = Array.from(document.querySelectorAll(sel));
+                    for (const btn of btns) {
+                        if (!btn || btn.offsetParent === null) continue;
+                        const txt = (btn.innerText || '').trim();
+                        if (!txt || txt.length > 48) continue;
+                        if (/(thinking|tư duy|deep research|\\bpro\\b)/i.test(txt) && !/(fast|flash|nhanh)/i.test(txt)) {
+                            btn.click();
+                            return txt;
+                        }
+                    }
+                }
+                return '';
+            }"""
+        )
+        if not current_mode:
+            return
+        time.sleep(0.35)
+        switched = bool(
+            page.evaluate(
+                """() => {
+                    const items = Array.from(document.querySelectorAll(
+                        '[role="menuitem"], [role="menuitemradio"], [role="option"], button.mat-mdc-menu-item, bard-mode-list-button button'
+                    ));
+                    for (const item of items) {
+                        if (!item || item.offsetParent === null) continue;
+                        const txt = (item.innerText || '').trim();
+                        if (/(fast|flash|nhanh)/i.test(txt) && !/(thinking|tư duy|deep research)/i.test(txt)) {
+                            item.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }"""
+            )
+        )
+        if switched:
+            time.sleep(0.35)
+            log_fn(
+                f"Switched Gemini model from '{current_mode}' to Fast/Flash for reliable image generation."
+            )
+        else:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _send_chat_message(page: Any, message: str) -> None:
     input_box = _find_chat_input(page)
     if not input_box:
         raise ProviderAuthError("Chat input box disappeared before sending prompt.")
 
-    input_box.click()
-    time.sleep(0.08)
+    single_line = " ".join(line.strip() for line in message.splitlines() if line.strip())
 
+    # Focus-independent DOM text injection (works reliably even when Chrome window is occluded/backgrounded on macOS)
+    inserted = False
     try:
-        tag_name = (input_box.evaluate("el => el.tagName.toLowerCase()") or "").strip()
-        if tag_name in ("textarea", "input"):
-            input_box.fill("")
-        else:
-            input_box.evaluate(
-                """el => {
+        inserted = bool(
+            page.evaluate(
+                """(text) => {
+                    const selectors = [
+                        "rich-textarea div[contenteditable='true']",
+                        "div.ql-editor[contenteditable='true']",
+                        "div#prompt-textarea[contenteditable='true']",
+                        "textarea#prompt-textarea",
+                        "div[contenteditable='true'][role='textbox']",
+                        "textarea[placeholder]",
+                        "textarea"
+                    ];
+                    let el = null;
+                    for (const s of selectors) {
+                        const cand = document.querySelector(s);
+                        if (cand && cand.offsetParent !== null) {
+                            el = cand;
+                            break;
+                        }
+                    }
+                    if (!el) return false;
+                    el.focus();
+                    const tag = (el.tagName || '').toLowerCase();
+                    if (tag === 'textarea' || tag === 'input') {
+                        const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                        if (setter) setter.call(el, text);
+                        else el.value = text;
+                        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        return (el.value || '').trim().length > 0;
+                    }
+
                     const sel = window.getSelection();
                     const range = document.createRange();
                     range.selectNodeContents(el);
                     sel.removeAllRanges();
                     sel.addRange(range);
-                }"""
-            )
-            page.keyboard.press("Backspace")
-            time.sleep(0.05)
-    except Exception:
-        pass
+                    document.execCommand('delete', false);
+                    document.execCommand('insertText', false, text);
 
-    single_line = " ".join(line.strip() for line in message.splitlines() if line.strip())
-    try:
-        tag_name = (input_box.evaluate("el => el.tagName.toLowerCase()") or "").strip()
-        if tag_name in ("textarea", "input"):
-            input_box.fill(single_line)
-        else:
-            page.keyboard.insert_text(single_line)
+                    if (((el.innerText || '').trim()).length === 0) {
+                        el.textContent = text;
+                        el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+                        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                    }
+                    return ((el.innerText || el.textContent || '').trim()).length > 0;
+                }""",
+                single_line,
+            )
+        )
     except Exception:
+        inserted = False
+
+    if not inserted:
+        try:
+            input_box.click(timeout=2000)
+        except Exception:
+            pass
         page.keyboard.insert_text(single_line)
 
-    time.sleep(0.2)
-    sent = page.evaluate(
-        """() => {
-            const selectors = [
-                'button[data-testid="send-button"]',
-                'button.send-button:not(.stop)',
-                'button[aria-label*="Send message" i]',
-                'button[aria-label*="Send prompt" i]',
-                'button[aria-label="Send"]',
-                'button[aria-label*="Gửi tin nhắn" i]',
-                'button[aria-label*="Gửi" i]',
-                'button[type="submit"]'
-            ];
-            for (const s of selectors) {
-                const btn = document.querySelector(s);
-                if (btn && btn.offsetParent !== null && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
-                    btn.click();
-                    return true;
-                }
-            }
-            return false;
-        }"""
-    )
+    # Poll up to 1.8s for the Send button to enable after Angular/React processes the input event
+    sent = False
+    for _ in range(15):
+        time.sleep(0.12)
+        try:
+            sent = bool(
+                page.evaluate(
+                    """() => {
+                        const selectors = [
+                            'button[data-testid="send-button"]',
+                            'button.send-button:not(.stop)',
+                            'button[aria-label*="Send message" i]',
+                            'button[aria-label*="Send prompt" i]',
+                            'button[aria-label="Send"]',
+                            'button[aria-label*="Gửi tin nhắn" i]',
+                            'button[aria-label*="Gửi" i]',
+                            'button[type="submit"]'
+                        ];
+                        for (const s of selectors) {
+                            const btn = document.querySelector(s);
+                            if (btn && btn.offsetParent !== null && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+                                btn.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }"""
+                )
+            )
+            if sent:
+                break
+        except Exception:
+            continue
+
     if not sent:
         page.keyboard.press("Enter")
 
@@ -915,6 +1060,18 @@ def _inspect_generation_dom(page: Any) -> Dict[str, Any]:
                     }
                 }
 
+                let composerTextLen = 0;
+                const compInputs = document.querySelectorAll(
+                    "rich-textarea div[contenteditable='true'], div.ql-editor[contenteditable='true'], div#prompt-textarea[contenteditable='true'], textarea#prompt-textarea, textarea"
+                );
+                for (const ci of compInputs) {
+                    if (ci && ci.offsetParent !== null) {
+                        const rawVal = (ci.value !== undefined ? ci.value : (ci.innerText || '')).trim();
+                        composerTextLen = rawVal.length;
+                        break;
+                    }
+                }
+
                 return {
                     domError: '',
                     userCount,
@@ -923,6 +1080,7 @@ def _inspect_generation_dom(page: Any) -> Dict[str, Any]:
                     stopVisible,
                     sendReady,
                     actionBarVisible,
+                    composerTextLen,
                     errorBanner,
                     latestText,
                     images,
@@ -1298,9 +1456,15 @@ def _extract_raw_bytes_via_cdp(
 
 def _is_generation_stream_url(url: str, method: str = "POST") -> bool:
     u = (url or "").lower()
-    if "streamgenerate" in u or "/backend-api/f/conversation" in u or "/backend-api/conversation" in u or "/rest/app-chat/" in u:
+    if (
+        "streamgenerate" in u
+        or "/_/bardchatui/" in u
+        or "/backend-api/f/conversation" in u
+        or "/backend-api/conversation" in u
+        or "/rest/app-chat/" in u
+    ):
         return True
-    if method.upper() == "POST" and "bardfrontendservice" in u:
+    if method.upper() == "POST" and ("bardfrontendservice" in u or "assistant.lamda" in u):
         return True
     return False
 
@@ -1495,9 +1659,15 @@ def _evaluate_cdp_turn_signals(
         or new_imgs_count > 0
     )
     if not send_confirmed:
-        if no_send_polls >= 5 and not nudged_send:
-            return "nudge_send", "Prompt send not yet confirmed by DOM or network; re-submitting..."
-        if no_send_polls >= 15:
+        composer_text_len = int(dom_state.get("composerTextLen", -1))
+        # Only re-submit when text is still sitting unsent in composer (composer_text_len > 0),
+        # or if composer couldn't be read after a generous wait. Prevents double-sending!
+        if not nudged_send and (
+            (composer_text_len > 0 and no_send_polls >= 6)
+            or (composer_text_len != 0 and no_send_polls >= 9)
+        ):
+            return "nudge_send", "Prompt still in composer unsubmitted; clicking send..."
+        if no_send_polls >= 18:
             return "fail_transient", f"{engine.upper()} tab did not register prompt submission."
         return "continue", ""
 
@@ -1519,10 +1689,16 @@ def _evaluate_cdp_turn_signals(
         )
         if turn_completed:
             if len(latest_text) > 10:
+                snippet = latest_text[:90].replace("\n", " ")
+                # Never waste a 2nd prompt inside a chat where the model explicitly states image tools are unavailable!
+                if _is_tool_unavailable_refusal(latest_text):
+                    return (
+                        "fail_tool_unavailable",
+                        f'{engine.upper()} image generation tool unavailable ("{snippet}...").',
+                    )
                 if not retried_explicit:
                     return "retry_image_prompt", "Assistant returned text only; requesting explicit image tool invocation..."
-                snippet = latest_text[:90].replace("\n", " ")
-                return "fail_transient", f"{engine.upper()} returned text instead of an image (\"{snippet}...\")."
+                return "fail_transient", f'{engine.upper()} returned text instead of an image ("{snippet}...").'
             if idle_after_finish_polls >= 2:
                 return "fail_transient", f"{engine.upper()} finished/stopped the turn without generating an image."
 
@@ -1731,6 +1907,9 @@ def generate_image_via_cdp(
             page = _start_fresh_chat(page, engine, _log)
             _ensure_authenticated(page, engine, slot_id=slot_id, cdp_port=target_port)
             _hb()
+        if engine == "gemini":
+            _ensure_gemini_fast_mode(page, _log)
+            _hb()
 
         if reference_path and os.path.exists(reference_path):
             _attach_reference_image(page, reference_path, _log)
@@ -1891,6 +2070,8 @@ def generate_image_via_cdp(
 
                 if action == "fail_auth":
                     raise ProviderAuthError(reason)
+                if action == "fail_tool_unavailable":
+                    raise ProviderToolUnavailableError(reason)
                 if action == "fail_transient":
                     raise RuntimeError(reason)
                 if action == "nudge_send":
@@ -1904,6 +2085,8 @@ def generate_image_via_cdp(
                     continue
                 if action == "retry_image_prompt":
                     retried_explicit = True
+                    nudged_send = True
+                    no_send_polls = 0
                     idle_after_finish_polls = 0
                     prev_user_count = int(state.get("userCount") or prev_user_count)
                     prev_assistant_count = int(state.get("assistantCount") or prev_assistant_count)

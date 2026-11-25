@@ -598,7 +598,7 @@ export function PlanScreen({
     )
   })
 
-  const currentExportMode: MetadataExportMode = job.metadata_export_mode || "json"
+  const currentExportMode: MetadataExportMode = job.metadata_export_mode || "csv"
 
   return (
     <div className="flex flex-col gap-6">
@@ -1086,8 +1086,7 @@ export function PlanScreen({
                 <div className="mt-1.5 inline-flex items-center rounded-full bg-black/40 p-1 ring-1 ring-white/[0.1]">
                   {(
                     [
-                      ["json", "Sidecar JSON (.json)"],
-                      ["caption", "Pin Caption (.txt)"],
+                      ["csv", "Picassy CSV (.csv)"],
                       ["none", "Images Only"],
                     ] as const
                   ).map(([mKey, mLabel]) => (
@@ -1193,11 +1192,7 @@ export function PlanScreen({
           </p>
           <p className="mt-0.5 font-mono-tech text-[11px] text-amber-300/90 truncate">
             {job.metadata_language} · Cat: {job.category || "Auto"} · Tag: {job.primary_tag || job.theme} ·{" "}
-            {currentExportMode === "caption"
-              ? "Picassy (.txt)"
-              : currentExportMode === "none"
-                ? "Image Only"
-                : "Sidecar (.json)"}
+            {currentExportMode === "none" ? "Image Only" : "Picassy (.csv)"}
           </p>
         </div>
 

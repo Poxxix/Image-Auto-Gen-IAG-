@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict, List, Optional
 from config import PROVIDER_MODELS, normalize_cdp_slots
 from modules.image_providers.browser_cdp_provider import (
     ProviderAuthError,
+    ProviderToolUnavailableError,
     ReferenceTooSimilarError,
     check_cdp_status,
     generate_image_via_cdp,
@@ -164,6 +165,7 @@ def generate_image_for_turn(
 
 __all__ = [
     "ProviderAuthError",
+    "ProviderToolUnavailableError",
     "ReferenceTooSimilarError",
     "check_cdp_status",
     "launch_chrome_ai_master",

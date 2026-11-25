@@ -94,7 +94,7 @@ export function SettingsPanel({
     default_aspect_ratio: settings?.default_aspect_ratio || "1:1",
     default_metadata_language: settings?.default_metadata_language || "English",
     default_metadata_export_mode:
-      settings?.default_metadata_export_mode || "json",
+      settings?.default_metadata_export_mode || "csv",
     default_filename_style: settings?.default_filename_style || "picassy_slug",
     default_caption_prompt: settings?.default_caption_prompt || "",
     use_ai_caption_prompt: settings?.use_ai_caption_prompt ?? true,
@@ -157,6 +157,19 @@ export function SettingsPanel({
     setLaunchingSlotId(slotId)
     try {
       await onLaunchCdp(engine, forceRestart, slotId)
+    } finally {
+      setLaunchingSlotId(null)
+    }
+  }
+
+  const handleToggleSlotEnabled = async (slotId: number, checked: boolean) => {
+    const nextSlots = (form.cdp_slots || DEFAULT_SLOTS).map((item) =>
+      item.slot_id === slotId ? { ...item, enabled: checked } : item
+    )
+    setForm((f) => ({ ...f, cdp_slots: nextSlots }))
+    setLaunchingSlotId(slotId)
+    try {
+      await onSaveSettings({ cdp_slots: nextSlots })
     } finally {
       setLaunchingSlotId(null)
     }
@@ -232,7 +245,7 @@ export function SettingsPanel({
           >
             <div className="flex flex-col gap-4">
               <p className="text-xs leading-relaxed text-[#9ca3af]">
-                Enable up to 4 isolated Chrome profiles (:9222..:9225) to run 4 independent image sets in parallel. If one account logs out or hits rate-limit, only its Job pauses while other slots keep running. Click <strong>Save Studio Settings</strong> after toggling slot enablement.
+                Enable up to 4 isolated Chrome profiles (:9222..:9225) to run 4 independent image sets in parallel. If one account logs out or hits rate-limit, only its Job pauses while other slots keep running. Toggling a slot switch or clicking <strong>Launch</strong> saves &amp; wakes workers immediately.
               </p>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -270,15 +283,9 @@ export function SettingsPanel({
                         </div>
                         <Switch
                           checked={slotCfg.enabled}
+                          disabled={isBusy}
                           onCheckedChange={(checked) =>
-                            setForm((f) => ({
-                              ...f,
-                              cdp_slots: (f.cdp_slots || DEFAULT_SLOTS).map((item) =>
-                                item.slot_id === slotCfg.slot_id
-                                  ? { ...item, enabled: checked }
-                                  : item
-                              ),
-                            }))
+                            handleToggleSlotEnabled(slotCfg.slot_id, checked)
                           }
                         />
                       </div>
@@ -288,16 +295,20 @@ export function SettingsPanel({
                           tone={
                             live?.active_job_id
                               ? "sky"
-                              : online
-                                ? "emerald"
-                                : "amber"
+                              : !slotCfg.enabled
+                                ? (online ? "amber" : "neutral")
+                                : online
+                                  ? "emerald"
+                                  : "amber"
                           }
                           label={
                             live?.active_job_id
                               ? `Running Set #${live.active_job_id}`
-                              : online
-                                ? "Online"
-                                : "Standby"
+                              : !slotCfg.enabled
+                                ? (online ? "Connected (Disabled)" : "Disabled")
+                                : online
+                                  ? "Online"
+                                  : "Standby"
                           }
                         />
                         <div className="flex items-center gap-1.5">
@@ -308,7 +319,7 @@ export function SettingsPanel({
                             icon={<TerminalWindow size={12} weight="light" />}
                             className="h-7 px-2.5 text-[11px]"
                           >
-                            {online ? "Focus" : "Launch"}
+                            {online ? (slotCfg.enabled ? "Focus" : "Enable & Focus") : "Launch"}
                           </StudioButton>
                           {online && (
                             <StudioButton
@@ -383,11 +394,11 @@ export function SettingsPanel({
                       Default Post-Image Export Mode
                     </p>
                     <p className="text-[11px] text-[#9ca3af]">
-                      Choose default output after each generated image (JSON, Pinterest Caption .txt, or Image Only).
+                      Choose default output after each generated image (Picassy pin-import.csv or Image Only).
                     </p>
                   </div>
                   <Select
-                    value={form.default_metadata_export_mode || "json"}
+                    value={form.default_metadata_export_mode || "csv"}
                     onValueChange={(v) =>
                       v &&
                       setForm((f) => ({
@@ -401,8 +412,7 @@ export function SettingsPanel({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="json">Xuất JSON (.json)</SelectItem>
-                      <SelectItem value="caption">Xuất Caption (.txt Pin)</SelectItem>
+                      <SelectItem value="csv">Xuất CSV (pin-import.csv)</SelectItem>
                       <SelectItem value="none">Không xuất (Chỉ ảnh)</SelectItem>
                     </SelectContent>
                   </Select>

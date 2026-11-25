@@ -307,7 +307,7 @@ export function StudioLayout({
                   const pct = Math.round(
                     (done / Math.max(1, job.counts.total)) * 100
                   )
-                  const expMode = job.metadata_export_mode || "json"
+                  const expMode = job.metadata_export_mode || "csv"
                   return (
                     <div
                       key={job.id}
@@ -373,11 +373,7 @@ export function StudioLayout({
                         <span className="font-mono-tech text-[10px] text-[#646b78] truncate">
                           {job.active_cdp_slot ? `S${job.active_cdp_slot} · ` : ""}
                           {job.aspect_ratio} ·{" "}
-                          {expMode === "caption"
-                            ? "TXT"
-                            : expMode === "none"
-                              ? "IMG"
-                              : "JSON"}
+                          {expMode === "none" ? "IMG" : "CSV"}
                         </span>
                         <div className="flex items-center gap-1">
                           {(["plan", "run", "gallery"] as const).map((t) => (
@@ -430,27 +426,31 @@ export function StudioLayout({
                 type="button"
                 disabled={launchingCdp}
                 onClick={() => handleLaunchClick("gemini", slot.slot_id)}
-                title={`${slot.label} (:${slot.port})${slot.active_job_id ? ` · Running Set #${slot.active_job_id}` : ""} — click to Launch/Focus`}
+                title={`${slot.label} (:${slot.port})${slot.active_job_id ? ` · Running Set #${slot.active_job_id}` : !slot.enabled ? (slot.connected ? " · Browser connected but worker disabled — click to enable & focus" : " · Disabled — click to launch & enable") : ""} — click to Launch/Focus`}
                 className={cn(
                   "flex items-center justify-between rounded-xl px-2 py-1 text-[10px] font-mono-tech ring-1 transition-all cursor-pointer",
-                  slot.connected
+                  slot.enabled && slot.connected
                     ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/35 hover:bg-emerald-500/25"
-                    : slot.enabled
-                      ? "bg-white/[0.04] text-[#d1d5db] ring-white/[0.09] hover:bg-white/[0.1]"
-                      : "bg-white/[0.015] text-[#646b78] ring-white/[0.04] opacity-70 hover:opacity-100"
+                    : !slot.enabled && slot.connected
+                      ? "bg-amber-500/15 text-amber-200 ring-amber-400/35 hover:bg-amber-500/25"
+                      : slot.enabled
+                        ? "bg-white/[0.04] text-[#d1d5db] ring-white/[0.09] hover:bg-white/[0.1]"
+                        : "bg-white/[0.015] text-[#646b78] ring-white/[0.04] opacity-70 hover:opacity-100"
                 )}
               >
                 <span className="truncate">
-                  S{slot.slot_id} :{slot.port}
+                  S{slot.slot_id} :{slot.port}{!slot.enabled ? " (Off)" : ""}
                 </span>
                 <span
                   className={cn(
                     "size-1.5 rounded-full shrink-0",
                     slot.active_job_id
                       ? "bg-sky-400 animate-pulse"
-                      : slot.connected
+                      : slot.enabled && slot.connected
                         ? "bg-emerald-400"
-                        : "bg-[#4b5563]"
+                        : slot.connected
+                          ? "bg-amber-400"
+                          : "bg-[#4b5563]"
                   )}
                 />
               </button>
@@ -569,16 +569,15 @@ export function StudioLayout({
                 <div className="flex items-center gap-1.5">
                   <div
                     className="flex items-center rounded-full bg-white/[0.03] p-0.5 ring-1 ring-white/[0.08]"
-                    title="Post-image export mode: Sidecar JSON, Pinterest Caption (.txt), or Images Only"
+                    title="Post-image export mode: Picassy CSV (pin-import.csv) or Images Only"
                   >
                     {(
                       [
-                        ["json", "JSON"],
-                        ["caption", "Pin TXT"],
+                        ["csv", "CSV"],
                         ["none", "Img Only"],
                       ] as const
                     ).map(([modeKey, modeLabel]) => {
-                      const currentMode = activeJob.metadata_export_mode || "json"
+                      const currentMode = activeJob.metadata_export_mode || "csv"
                       const isModeActive = currentMode === modeKey
                       return (
                         <button

@@ -2,8 +2,7 @@ import * as React from "react"
 import {
   FolderOpen,
   DownloadSimple,
-  FileCode,
-  FileText,
+  Table,
   Copy,
   Check,
   ArrowsClockwise,
@@ -13,6 +12,7 @@ import {
   MagnifyingGlass,
   FloppyDisk,
   PencilSimple,
+  Star,
 } from "@phosphor-icons/react"
 import {
   StudioPanel,
@@ -28,11 +28,9 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog"
 import {
-  getGenerationCaptionFileUrl,
+  formatPicassyKeyword,
   getGenerationImageUrl,
-  getGenerationSidecarUrl,
-  getJobCaptionsBundleUrl,
-  getJobManifestUrl,
+  getJobCsvUrl,
   getJobZipUrl,
   getReferenceImageUrl,
   type CreateJobPayload,
@@ -55,6 +53,7 @@ export interface GalleryScreenProps {
   onUpdateMetadata: (
     genId: number,
     updates: {
+      is_peak?: boolean
       title?: string
       caption?: string
       description?: string
@@ -101,9 +100,9 @@ export function GalleryScreen({
   onDeleteJob,
 }: GalleryScreenProps) {
   const [selectedGen, setSelectedGen] = React.useState<GenerationItem | null>(null)
-  const [modalTab, setModalTab] = React.useState<"details" | "caption" | "json">("details")
+  const [modalTab, setModalTab] = React.useState<"details" | "csv">("details")
   const [filterStatus, setFilterStatus] = React.useState<
-    "all" | "completed" | "metadata_pending" | "duplicates"
+    "all" | "completed" | "peak" | "metadata_pending" | "duplicates"
   >("all")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [titleDrafts, setTitleDrafts] = React.useState<Record<number, string>>({})
@@ -167,7 +166,7 @@ export function GalleryScreen({
       <StudioPanel eyebrow="04 · SET GALLERY & EXPORTS" title="No Image Sets Yet">
         <div className="flex flex-col items-start gap-4 py-6">
           <p className="text-sm text-[#9ca3af]">
-            Generated image sets, Pinterest captions, sidecar JSON files, and ZIP archives appear here once created.
+            Generated image sets, Picassy captions, bulk-import CSV files (`pin-import.csv`), and ZIP archives appear here once created.
           </p>
           <StudioButton variant="primary" onClick={() => onNavigateTab("create")}>
             Create First Image Set
@@ -177,10 +176,20 @@ export function GalleryScreen({
     )
   }
 
-  const exportMode: MetadataExportMode = currentJob.metadata_export_mode || "json"
-
-  const jobPrimaryTag = (currentJob.primary_tag || currentJob.theme || "").trim()
+  const exportMode: MetadataExportMode = currentJob.metadata_export_mode || "csv"
+  const rawJobTag = (currentJob.primary_tag || currentJob.theme || "").trim()
+  const jobPrimaryTag = formatPicassyKeyword(rawJobTag) || rawJobTag
   const jobCategory = (currentJob.category || "Art").trim()
+  const peakCount = currentJob.generations.filter((g) => Boolean(g.is_peak)).length
+
+  const handleTogglePeak = async (gen: GenerationItem) => {
+    setSavingId(gen.id)
+    try {
+      await onUpdateMetadata(gen.id, { is_peak: !gen.is_peak })
+    } finally {
+      setSavingId(null)
+    }
+  }
 
   const handleSaveMeta = async (gen: GenerationItem, force = false) => {
     const newTitle = (titleDrafts[gen.id] ?? gen.title).trim()
@@ -265,6 +274,7 @@ export function GalleryScreen({
 
   const filteredGenerations = currentJob.generations.filter((g) => {
     if (filterStatus === "completed" && g.status !== "completed") return false
+    if (filterStatus === "peak" && !g.is_peak) return false
     if (filterStatus === "metadata_pending" && g.status !== "metadata_pending")
       return false
     if (filterStatus === "duplicates" && !g.duplicate_warning) return false
@@ -281,33 +291,31 @@ export function GalleryScreen({
     )
   })
 
-  const buildSidecarJsonPreview = (gen: GenerationItem) =>
-    JSON.stringify(
-      {
-        index: gen.index_num,
-        file_prefix: gen.image_file ? gen.image_file.replace(/\.[^.]+$/, "") : "",
-        primary_tag: jobPrimaryTag,
-        category: jobCategory,
-        title: titleDrafts[gen.id] ?? gen.title,
-        description: descDrafts[gen.id] ?? gen.description,
-        alt_text: altDrafts[gen.id] ?? (gen.alt_text || ""),
-        prompt_final: promptDrafts[gen.id] ?? gen.prompt_final,
-        reference: gen.reference
-          ? {
-            id: gen.reference.id,
-            source_type: gen.reference.source_type,
-            source_ref: gen.reference.source_ref,
-            filename: gen.reference.filename,
-            usage_rights: gen.reference.usage_rights,
-          }
-          : null,
-        model: gen.model || currentJob.model,
-        status: gen.status,
-        image_file: gen.image_file,
-      },
-      null,
-      2
-    )
+  const escapeCsvCell = (val: string) => {
+    const clean = val.replace(/\s+/g, " ").trim()
+    if (clean.includes(",") || clean.includes('"') || clean.includes("\n")) {
+      return `"${clean.replace(/"/g, '""')}"`
+    }
+    return clean
+  }
+
+  const buildCsvRowPreview = (gen: GenerationItem, withHeader = true) => {
+    const row = [
+      gen.image_file || "",
+      titleDrafts[gen.id] ?? gen.title ?? "",
+      descDrafts[gen.id] ?? gen.description ?? "",
+      altDrafts[gen.id] ?? gen.alt_text ?? "",
+      jobCategory,
+      jobPrimaryTag,
+      gen.is_peak ? "TRUE" : "FALSE",
+      promptDrafts[gen.id] ?? gen.prompt_final ?? "",
+    ]
+      .map(escapeCsvCell)
+      .join(",")
+    return withHeader
+      ? `File name,title,description,alt_text,categories,tags,Peak of Picassy,prompt\n${row}`
+      : row
+  }
 
   return (
     <div className="flex flex-col gap-8">
@@ -339,12 +347,11 @@ export function GalleryScreen({
 
         {/* Export Actions */}
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* 3-Way Export Mode Switch: Xuất JSON | Xuất Caption | Không */}
+          {/* 2-Way Export Mode Switch: Xuất CSV | Không (Chỉ ảnh) */}
           <div className="flex items-center rounded-full bg-white/[0.04] p-1 ring-1 ring-white/[0.1]">
             {(
               [
-                ["json", "Xuất JSON (.json)"],
-                ["caption", "Xuất Caption (.txt)"],
+                ["csv", "Xuất CSV (pin-import.csv)"],
                 ["none", "Không (Chỉ ảnh)"],
               ] as const
             ).map(([mKey, mLabel]) => (
@@ -400,25 +407,15 @@ export function GalleryScreen({
               </StudioButton>
             )}
 
-          {exportMode === "caption" && (
+          {currentJob.generations.some((g) => Boolean(g.image_file)) && (
             <a
-              href={getJobCaptionsBundleUrl(currentJob.id)}
-              download={`captions_${currentJob.slug}.txt`}
-              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-amber-400/15 px-4 text-xs font-medium text-amber-200 ring-1 ring-amber-400/30 hover:bg-amber-400/25"
+              href={getJobCsvUrl(currentJob.id)}
+              download={`${currentJob.slug || "set"}-pin-import.csv`}
+              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-amber-400/15 px-4 text-xs font-semibold text-amber-200 ring-1 ring-amber-400/35 hover:bg-amber-400/25"
+              title="Download 8-column Picassy bulk-import CSV (pin-import.csv)"
             >
-              <FileText size={15} weight="light" />
-              captions.txt
-            </a>
-          )}
-
-          {exportMode === "json" && (
-            <a
-              href={getJobManifestUrl(currentJob.id)}
-              download="manifest.json"
-              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-white/[0.05] px-4 text-xs font-medium text-[#e5e7eb] ring-1 ring-white/[0.09] hover:bg-white/[0.1]"
-            >
-              <FileCode size={15} weight="light" />
-              manifest.json
+              <Table size={15} weight="duotone" />
+              pin-import.csv
             </a>
           )}
 
@@ -551,6 +548,7 @@ export function GalleryScreen({
             [
               ["all", `All (${currentJob.counts.total})`],
               ["completed", `Completed (${currentJob.counts.completed})`],
+              ["peak", `Peak ★ (${peakCount})`],
               [
                 "metadata_pending",
                 `Meta Pending (${currentJob.counts.metadata_pending})`,
@@ -667,6 +665,20 @@ export function GalleryScreen({
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleTogglePeak(gen)}
+                      title={`Peak of Picassy: ${gen.is_peak ? "TRUE (click to unset)" : "FALSE (click to mark TRUE in CSV)"}`}
+                      className={cn(
+                        "inline-flex h-7 items-center gap-1 rounded-full px-2.5 font-mono-tech text-[10px] font-semibold ring-1 transition-all cursor-pointer",
+                        gen.is_peak
+                          ? "bg-amber-400 text-[#050505] ring-amber-300 shadow-[0_2px_10px_rgba(251,191,36,0.28)]"
+                          : "bg-white/[0.04] text-[#9ca3af] ring-white/[0.08] hover:bg-white/[0.1] hover:text-amber-200"
+                      )}
+                    >
+                      <Star size={12} weight={gen.is_peak ? "fill" : "regular"} />
+                      Peak
+                    </button>
                     <StudioBadge
                       tone={
                         gen.status === "completed"
@@ -682,7 +694,7 @@ export function GalleryScreen({
                     <button
                       type="button"
                       onClick={() => onDeleteGeneration(gen.id)}
-                      title="Delete this image & its sidecar/caption file"
+                      title="Delete this image and resequence pin-import.csv"
                       className="flex size-7 items-center justify-center rounded-full bg-white/[0.04] text-[#646b78] hover:bg-rose-500/20 hover:text-rose-300 cursor-pointer"
                     >
                       <Trash size={13} />
@@ -846,7 +858,7 @@ export function GalleryScreen({
                   </div>
                 ) : (
                   <p className="mt-3 text-[11px] text-[#646b78]">
-                    Image-only export mode active. Switch to "Xuất Caption" or "Xuất JSON" above to edit &amp; export Picassy metadata.
+                    Image-only export mode active. Switch to &quot;Xuất CSV&quot; above to edit &amp; export <code className="text-[#9ca3af]">pin-import.csv</code>.
                   </p>
                 )}
               </div>
@@ -895,30 +907,17 @@ export function GalleryScreen({
 
                 {hasImage && (
                   <div className="flex items-center gap-1.5">
-                    {exportMode === "caption" && (
-                      <a
-                        href={getGenerationCaptionFileUrl(gen.id)}
-                        download={
-                          gen.caption_file ||
-                          `${String(gen.index_num).padStart(3, "0")}_${currentJob.slug}.txt`
-                        }
-                        className="rounded-full bg-amber-400/15 px-2.5 py-1 font-mono-tech text-[10px] text-amber-200 hover:bg-amber-400/25"
-                        title="Download .TXT Pin Caption file"
-                      >
-                        .TXT
-                      </a>
-                    )}
-                    {exportMode === "json" && (
+                    {exportMode === "csv" && (
                       <button
                         type="button"
                         onClick={() => {
                           setSelectedGen(gen)
-                          setModalTab("json")
+                          setModalTab("csv")
                         }}
                         className="rounded-full bg-white/[0.05] px-2.5 py-1 font-mono-tech text-[10px] text-[#d1d5db] hover:bg-white/[0.12] cursor-pointer"
-                        title="Inspect sidecar JSON"
+                        title="Preview exact CSV row in pin-import.csv"
                       >
-                        .JSON
+                        .CSV Row
                       </button>
                     )}
                     <a
@@ -966,7 +965,7 @@ export function GalleryScreen({
                     </DialogDescription>
                   </div>
 
-                  {/* Modal Tab Switcher: Details vs Pin Caption vs Sidecar JSON */}
+                  {/* Modal Tab Switcher: Details vs CSV Row */}
                   <div className="flex items-center rounded-full bg-white/[0.04] p-1 ring-1 ring-white/[0.08]">
                     <button
                       type="button"
@@ -978,31 +977,19 @@ export function GalleryScreen({
                           : "text-[#9ca3af] hover:text-white"
                       )}
                     >
-                      Details & Edit
+                      Details &amp; Edit
                     </button>
                     <button
                       type="button"
-                      onClick={() => setModalTab("caption")}
+                      onClick={() => setModalTab("csv")}
                       className={cn(
-                        "rounded-full px-3 py-1 text-xs font-medium cursor-pointer",
-                        modalTab === "caption"
+                        "rounded-full px-3 py-1 font-mono-tech text-xs font-medium cursor-pointer",
+                        modalTab === "csv"
                           ? "bg-amber-400 text-[#050505]"
                           : "text-[#9ca3af] hover:text-white"
                       )}
                     >
-                      Picassy TXT (.txt)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setModalTab("json")}
-                      className={cn(
-                        "rounded-full px-3 py-1 font-mono-tech text-xs font-medium cursor-pointer",
-                        modalTab === "json"
-                          ? "bg-[#f4f5f7] text-[#050505]"
-                          : "text-[#9ca3af] hover:text-white"
-                      )}
-                    >
-                      .json
+                      CSV Row (.csv)
                     </button>
                   </div>
                 </div>
@@ -1096,6 +1083,30 @@ export function GalleryScreen({
                         </div>
                       )}
 
+                      <div className="flex items-center justify-between rounded-xl bg-white/[0.025] p-3 ring-1 ring-white/[0.07]">
+                        <div>
+                          <p className="text-xs font-semibold text-white">
+                            Peak of Picassy (Featured CSV Flag)
+                          </p>
+                          <p className="text-[11px] text-[#9ca3af]">
+                            Exports <code className="text-amber-300">{selectedGen.is_peak ? "TRUE" : "FALSE"}</code> in column 7 of <code className="text-[#d1d5db]">pin-import.csv</code>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePeak(selectedGen)}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono-tech text-xs font-semibold ring-1 transition-all cursor-pointer",
+                            selectedGen.is_peak
+                              ? "bg-amber-400 text-[#050505] ring-amber-300"
+                              : "bg-white/[0.05] text-[#d1d5db] ring-white/[0.1] hover:bg-white/[0.1]"
+                          )}
+                        >
+                          <Star size={13} weight={selectedGen.is_peak ? "fill" : "regular"} />
+                          {selectedGen.is_peak ? "TRUE" : "FALSE"}
+                        </button>
+                      </div>
+
                       <div className="rounded-xl bg-white/[0.02] p-3 ring-1 ring-white/[0.06] font-mono-tech text-[11px] text-[#9ca3af] space-y-1">
                         <p>MD5: {selectedGen.md5}</p>
                         <p>dHash: {selectedGen.dhash}</p>
@@ -1117,11 +1128,11 @@ export function GalleryScreen({
 
                       <div className="flex items-center gap-2">
                         <a
-                          href={getGenerationCaptionFileUrl(selectedGen.id)}
-                          download
+                          href={getJobCsvUrl(currentJob.id)}
+                          download={`${currentJob.slug || "set"}-pin-import.csv`}
                           className="rounded-full bg-amber-400/20 px-3.5 py-2 text-xs text-amber-200 hover:bg-amber-400/30"
                         >
-                          Download .TXT
+                          Download Set .CSV
                         </a>
                         <a
                           href={getGenerationImageUrl(
@@ -1137,10 +1148,10 @@ export function GalleryScreen({
                       </div>
                     </div>
                   </div>
-                ) : modalTab === "caption" ? (
+                ) : (
                   <div className="flex flex-col justify-between gap-3">
-                    <pre className="max-h-[370px] whitespace-pre-wrap overflow-auto rounded-2xl bg-[#050505] p-4 font-mono-tech text-xs leading-relaxed text-amber-200 ring-1 ring-white/[0.08]">
-                      {buildPinCopyBlock(selectedGen)}
+                    <pre className="max-h-[370px] whitespace-pre-wrap break-all overflow-auto rounded-2xl bg-[#050505] p-4 font-mono-tech text-[11px] leading-relaxed text-amber-200 ring-1 ring-white/[0.08]">
+                      {buildCsvRowPreview(selectedGen, true)}
                     </pre>
                     <div className="flex items-center justify-between">
                       <button
@@ -1148,52 +1159,22 @@ export function GalleryScreen({
                         onClick={() =>
                           handleCopyText(
                             selectedGen.id + 20000,
-                            buildPinCopyBlock(selectedGen)
+                            buildCsvRowPreview(selectedGen, false)
                           )
                         }
                         className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-4 py-2 text-xs text-white hover:bg-white/[0.12] cursor-pointer"
                       >
                         <Copy size={13} weight="light" />
                         {copiedId === selectedGen.id + 20000
-                          ? "Copied Pin Caption"
-                          : "Copy Pin Caption"}
+                          ? "Copied CSV Row"
+                          : "Copy CSV Row"}
                       </button>
                       <a
-                        href={getGenerationCaptionFileUrl(selectedGen.id)}
-                        download
+                        href={getJobCsvUrl(currentJob.id)}
+                        download={`${currentJob.slug || "set"}-pin-import.csv`}
                         className="rounded-full bg-amber-400 px-4 py-2 text-xs font-semibold text-[#050505] hover:bg-amber-300"
                       >
-                        Download .TXT Caption
-                      </a>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col justify-between gap-3">
-                    <pre className="max-h-[370px] overflow-auto rounded-2xl bg-[#050505] p-4 font-mono-tech text-[11px] leading-relaxed text-emerald-300 ring-1 ring-white/[0.08]">
-                      {buildSidecarJsonPreview(selectedGen)}
-                    </pre>
-                    <div className="flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleCopyText(
-                            selectedGen.id + 10000,
-                            buildSidecarJsonPreview(selectedGen)
-                          )
-                        }
-                        className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-4 py-2 text-xs text-white hover:bg-white/[0.12] cursor-pointer"
-                      >
-                        <Copy size={13} weight="light" />
-                        {copiedId === selectedGen.id + 10000
-                          ? "Copied Sidecar JSON"
-                          : "Copy Sidecar JSON"}
-                      </button>
-                      <a
-                        href={getGenerationSidecarUrl(selectedGen.id)}
-                        download={selectedGen.sidecar_file}
-                        className="rounded-full bg-[#f4f5f7] px-4 py-2 text-xs font-semibold text-[#050505] hover:bg-white"
-                      >
-                        Save {selectedGen.sidecar_file || "sidecar.json"}
+                        Download pin-import.csv
                       </a>
                     </div>
                   </div>

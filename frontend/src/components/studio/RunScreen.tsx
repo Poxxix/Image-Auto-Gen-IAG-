@@ -46,6 +46,7 @@ export interface RunScreenProps {
   onRetryFailed: (jobId: number) => Promise<void>
   onRetrySingleTurn: (genId: number, mutateAxes: boolean) => Promise<void>
   onSkipTurn?: (genId: number) => Promise<void>
+  onEnableSlot?: (slotId: number) => Promise<void>
   onRestartBrowser?: (slotId?: number) => Promise<void>
   onRetryMetadata: (genId: number, useBrowserTurn: boolean) => Promise<void>
   onDeleteGeneration: (genId: number) => Promise<void>
@@ -65,6 +66,7 @@ export function RunScreen({
   onRetryFailed,
   onRetrySingleTurn,
   onSkipTurn,
+  onEnableSlot,
   onRestartBrowser,
   onRetryMetadata,
   onDeleteGeneration,
@@ -204,18 +206,36 @@ export function RunScreen({
             </StudioButton>
           )}
 
-          {onRestartBrowser && (isRunning || isPaused) && (() => {
+          {(onEnableSlot || onRestartBrowser) && (isRunning || isPaused) && (() => {
             const activeSlotId = job.active_cdp_slot || job.preferred_cdp_slot || 1
             const slotObj = cdpSlots.find((s) => s.slot_id === activeSlotId)
             const targetPort = slotObj?.port || 9221 + activeSlotId
+            const needsEnableOrConnect =
+              isRunning &&
+              !job.active_cdp_slot &&
+              slotObj &&
+              (!slotObj.enabled || !slotObj.connected)
             return (
-              <StudioButton
-                variant="secondary"
-                onClick={() => onRestartBrowser(activeSlotId)}
-                title={`Force restart Chrome Slot #${activeSlotId} (:${targetPort}) if browser tab is hung`}
-              >
-                Restart Slot #{activeSlotId} (:{targetPort})
-              </StudioButton>
+              <>
+                {onEnableSlot && needsEnableOrConnect && (
+                  <StudioButton
+                    variant="primary"
+                    onClick={() => onEnableSlot(activeSlotId)}
+                    title={`Enable & connect Chrome Slot #${activeSlotId} (:${targetPort}) without restarting active session`}
+                  >
+                    Enable &amp; Run Slot #{activeSlotId} (:{targetPort})
+                  </StudioButton>
+                )}
+                {onRestartBrowser && (
+                  <StudioButton
+                    variant="secondary"
+                    onClick={() => onRestartBrowser(activeSlotId)}
+                    title={`Force restart Chrome Slot #${activeSlotId} (:${targetPort}) if browser tab is hung`}
+                  >
+                    Restart Slot #{activeSlotId} (:{targetPort})
+                  </StudioButton>
+                )}
+              </>
             )
           })()}
 
@@ -477,7 +497,7 @@ export function RunScreen({
                         <p className="text-xs italic text-[#646b78]">
                           {gen.status === "metadata_pending"
                             ? "Metadata pending — image safely saved"
-                            : (job.metadata_export_mode || "json") === "none"
+                            : (job.metadata_export_mode || "csv") === "none"
                               ? "Image-only mode (no caption prompt)"
                               : "Pin Title & Caption generated after image completes"}
                         </p>
@@ -513,7 +533,7 @@ export function RunScreen({
                           </button>
                         )}
                       {(gen.status === "metadata_pending" || hasImage) &&
-                        (job.metadata_export_mode || "json") !== "none" && (
+                        (job.metadata_export_mode || "csv") !== "none" && (
                           <button
                             type="button"
                             onClick={() => onRetryMetadata(gen.id, true)}
@@ -597,7 +617,7 @@ export function RunScreen({
               <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
                 <span>Post-image export</span>
                 <span className="font-mono-tech text-amber-300 uppercase">
-                  {job.metadata_export_mode || "json"}
+                  {job.metadata_export_mode || "csv"}
                 </span>
               </div>
               <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">

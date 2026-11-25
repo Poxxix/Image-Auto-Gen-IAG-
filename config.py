@@ -1,5 +1,6 @@
 import os
 import platform
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -229,15 +230,79 @@ METADATA_LANGUAGES: List[str] = [
     "Spanish",
 ]
 
-# Supported Post-Image Metadata / Caption Export Modes
-# - "json": Generate Title, Caption, Description & Hashtags after each image -> export <NNN>_<slug>.json + manifest.json
-# - "caption": Generate Title, Caption, Description & Hashtags after each image -> export <NNN>_<slug>.txt + captions.txt
-# - "none": Skip post-image caption prompt and export images only (maximum speed)
+_UPPER_ACRONYMS = {
+    "ai", "seo", "3d", "2d", "4k", "8k", "hd", "ui", "ux", "tv", "diy", "led", "uv", "rgb", "y2k"
+}
+
+
+def format_picassy_keyword(raw_text: Optional[str]) -> str:
+    """
+    Normalizes any raw keyword, theme, or image filename into clean Title-Case words
+    with zero hyphens/underscores (e.g. 'beautiful-image-1.png' -> 'Beautiful Image',
+    '1989_nails' -> '1989 Nails', 'Sympathy Messages' -> 'Sympathy Messages').
+    """
+    s = str(raw_text or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\.(?:png|jpe?g|webp|gif|avif)$", "", s, flags=re.IGNORECASE).strip()
+    if re.match(r"^\d{3}_[a-zA-Z]", s):
+        s = re.sub(r"^\d{3}_+", "", s)
+    elif re.search(r"[-_][a-zA-Z].*[-_]\d+$", s) or re.match(r"^[a-zA-Z][a-zA-Z0-9]*[-_]\d+$", s):
+        s = re.sub(r"[-_]\d+$", "", s)
+
+    s = re.sub(r"[-_]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+
+    out_words: List[str] = []
+    for word in s.split(" "):
+        if not word:
+            continue
+        low = word.lower()
+        if low in _UPPER_ACRONYMS:
+            out_words.append(low.upper())
+        elif len(word) >= 2 and word.isupper():
+            out_words.append(word)
+        elif re.match(r"^\d+[a-zA-Z]+$", word):
+            out_words.append(word.lower())
+        else:
+            out_words.append(word[0].upper() + word[1:])
+    return " ".join(out_words)
+
+
+# Supported Post-Image Metadata Export Modes (Picassy CSV Only or Image Only)
+# - "csv": Generate Picassy Title, Description & Alt Text -> export single `pin-import.csv` alongside images
+# - "none": Skip post-image metadata and export images only (maximum speed)
 METADATA_EXPORT_MODES: List[str] = [
-    "json",
-    "caption",
+    "csv",
     "none",
 ]
+
+
+def normalize_metadata_export_mode(
+    value: Optional[str],
+    default: str = "csv",
+    strict: bool = False,
+) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        if strict and value is not None:
+            raise ValueError("Invalid metadata_export_mode.")
+        return default
+    if raw in METADATA_EXPORT_MODES:
+        return raw
+    if raw in ("json", "caption"):
+        if strict:
+            raise ValueError(
+                f"Unsupported metadata_export_mode '{value}'. Expected one of: {', '.join(METADATA_EXPORT_MODES)}."
+            )
+        return "csv"
+    if strict:
+        raise ValueError(
+            f"Unsupported metadata_export_mode '{value}'. Expected one of: {', '.join(METADATA_EXPORT_MODES)}."
+        )
+    return default
 
 # Supported Exported Image Formats (per-set override or workspace default)
 # - "original": Keep exact bytes & format returned by provider (preserves provenance)
@@ -282,35 +347,35 @@ DEFAULT_CAPTION_PROMPT: str = (
 
 CAPTION_STYLE_PRESETS: List[Dict[str, str]] = [
     {
-        "id": "pinterest_seo",
-        "label": "Pinterest SEO (Default)",
+        "id": "picassy_standard",
+        "label": "Picassy SEO (Default)",
+        "prompt": DEFAULT_CAPTION_PROMPT,
+    },
+    {
+        "id": "picassy_beauty_fashion",
+        "label": "Beauty, Nails & Fashion",
         "prompt": (
-            "Write a high-converting Pinterest Pin Title, an aesthetic save-worthy Caption hook, "
-            "a 2-3 sentence keyword-rich Pinterest SEO Description, and 6-10 trending hashtags."
+            "Write natural Picassy SEO metadata highlighting finish, color harmony, and seasonal styling: "
+            "Title <= 60 chars starting with exact keyword, Description <= 160 chars without hashtags, "
+            "and truthful Alt Text strictly 100-125 chars."
         ),
     },
     {
-        "id": "viral_nail_beauty",
-        "label": "Beauty, Nails & Fashion Pin",
+        "id": "picassy_art_wallpaper",
+        "label": "Art, Anime & Wallpaper",
         "prompt": (
-            "Write a trendy Beauty/Nail/Fashion Pin Title, a chic short Caption hook, "
-            "a 2-3 sentence Description highlighting color, gloss, finish, and seasonal vibe, plus 8 beauty hashtags."
+            "Write evocative yet concise Picassy SEO metadata focusing on composition, lighting mood, and palette: "
+            "Title <= 60 chars starting with exact keyword, Description <= 160 chars without hashtags, "
+            "and vivid Alt Text strictly 100-125 chars."
         ),
     },
     {
-        "id": "instagram_editorial",
-        "label": "Instagram / Editorial Storytelling",
+        "id": "picassy_editorial_photo",
+        "label": "Photography & Visuals",
         "prompt": (
-            "Write an evocative editorial Headline, a warm conversational Instagram Caption hook, "
-            "a 2-sentence visual storytelling Description, and 8 curated niche hashtags."
-        ),
-    },
-    {
-        "id": "product_etsy",
-        "label": "Product / Shop Showcase",
-        "prompt": (
-            "Write a conversion-focused Product Pin Title, a benefit-driven Caption hook, "
-            "a 2-3 sentence Description emphasizing craftsmanship, texture, and styling, plus 8 shopping hashtags."
+            "Write editorial Picassy SEO metadata emphasizing camera perspective, texture, and atmosphere: "
+            "Title <= 60 chars starting with exact keyword, Description <= 160 chars without hashtags, "
+            "and screen-reader Alt Text strictly 100-125 chars."
         ),
     },
 ]
@@ -928,7 +993,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "default_session_cap": 20,
     "default_aspect_ratio": "1:1",
     "default_metadata_language": "English",
-    "default_metadata_export_mode": "json",  # json | caption | none
+    "default_metadata_export_mode": "csv",  # csv | none
     "default_filename_style": "picassy_slug",  # picassy_slug | studio_seq
     "default_caption_prompt": DEFAULT_CAPTION_PROMPT,
     "use_ai_caption_prompt": True,
@@ -942,7 +1007,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "optimize_prompt_english": True,
     "remove_watermark": True,
     "fresh_chat_per_turn": True,
-    "max_turn_retries": 2,
+    "max_turn_retries": 1,
     "cdp_turn_watchdog_sec": 30,
     "cdp_recycle_tab_interval": 20,
     "reference_similarity_check": True,

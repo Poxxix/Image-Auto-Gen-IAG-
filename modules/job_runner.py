@@ -10,6 +10,7 @@ from config import (
     MAX_CDP_SLOTS,
     normalize_cdp_slots,
     normalize_export_image_format,
+    normalize_metadata_export_mode,
 )
 from database.db_manager import db, now_iso
 from modules.app_logging import logger
@@ -20,6 +21,7 @@ from modules.export_manager import (
 )
 from modules.image_providers import (
     ProviderAuthError,
+    ProviderToolUnavailableError,
     ReferenceTooSimilarError,
     check_cdp_status,
     generate_image_for_turn,
@@ -54,6 +56,8 @@ class JobRunner:
         self._deferred_generations: set[int] = set()
         self._drop_ref_generations: set[int] = set()
         self._sim_failures: Dict[int, int] = {}
+        self._slot_tool_fail_streak: Dict[int, int] = {}
+        self._gen_tool_fail_counts: Dict[int, int] = {}
         self._slot_turns_since_recycle: Dict[int, int] = {}
         self._slot_recycle_next: Dict[int, bool] = {}
         self._stop_worker = False
@@ -132,6 +136,8 @@ class JobRunner:
         with self._lock:
             self._paused_jobs.discard(job_id)
             self._cancelled_jobs.discard(job_id)
+            for g in job.get("generations") or []:
+                self._gen_tool_fail_counts.pop(int(g["id"]), None)
 
         gens = job.get("generations") or []
         planned = [g for g in gens if g["status"] == "planned"]
@@ -506,7 +512,9 @@ class JobRunner:
         if not job or self._should_abort_job(job_id):
             return 0
 
-        export_mode = (job.get("metadata_export_mode") or "json").strip().lower()
+        export_mode = normalize_metadata_export_mode(
+            job.get("metadata_export_mode"), default="csv"
+        )
         requeued = 0
 
         for gen in job.get("generations") or []:
@@ -553,7 +561,9 @@ class JobRunner:
                         pass
 
             elif status == "failed":
-                permanent = any(
+                with self._lock:
+                    tool_fails_on_gen = self._gen_tool_fail_counts.get(gid, 0)
+                permanent = tool_fails_on_gen >= 2 or any(
                     tok in err_lower
                     for tok in ("auth", "sign in", "log in", "not configured", "aborted", "skipped")
                 )
@@ -671,7 +681,9 @@ class JobRunner:
             gen = db.update_generation(gen_id, prompt_final=active_prompt) or gen
             _log("Retrying with style-DNA prompt only (dropped sticky input reference).")
 
-        export_mode_pref = (job.get("metadata_export_mode") or "json").strip().lower()
+        export_mode_pref = normalize_metadata_export_mode(
+            job.get("metadata_export_mode"), default="csv"
+        )
         use_browser_turn_pref = bool(job.get("use_ai_caption_prompt", True))
         metadata_provider = str(settings.get("metadata_provider") or "auto").strip().lower()
         # Option 1A: Browser CDP handles ONLY Prompt #1 (image generation) unless user explicitly picks `browser_cdp`
@@ -717,6 +729,7 @@ class JobRunner:
                     1 if should_recycle_tab else (self._slot_turns_since_recycle.get(slot_id, 0) + 1)
                 )
                 self._slot_recycle_next[slot_id] = False
+                self._slot_tool_fail_streak[slot_id] = 0
         except ProviderAuthError as auth_err:
             with self._lock:
                 self._slot_recycle_next[slot_id] = True
@@ -732,6 +745,64 @@ class JobRunner:
             db.log_activity(str(auth_err), level="WARN", stage="AUTH", job_id=job_id, generation_id=gen_id)
             sync_job_manifest(job_id, rewrite_all_sidecars=False)
             return False
+        except ProviderToolUnavailableError as tool_err:
+            interrupted = self._resolve_interrupted_turn(job_id, gen)
+            if interrupted is not None:
+                return interrupted
+
+            with self._lock:
+                self._slot_recycle_next[slot_id] = True
+                streak = self._slot_tool_fail_streak.get(slot_id, 0) + 1
+                self._slot_tool_fail_streak[slot_id] = streak
+                gen_fails = self._gen_tool_fail_counts.get(gen_id, 0) + 1
+                self._gen_tool_fail_counts[gen_id] = gen_fails
+                if streak >= 3:
+                    self._paused_jobs.add(job_id)
+                    self._slot_tool_fail_streak[slot_id] = 0
+
+            if streak >= 3:
+                pause_msg = (
+                    f"Auto-paused on Slot #{slot_id} (:{cdp_port}) after 3 consecutive 'image tool unavailable' "
+                    "responses to prevent token waste. Switch Gemini to Fast/Flash mode (and use a separate Google "
+                    "account per slot), then click Resume."
+                )
+                db.update_generation(gen_id, status="planned", error=str(tool_err))
+                db.update_job(
+                    job_id,
+                    status="paused",
+                    active_cdp_slot=0,
+                    error=pause_msg,
+                    current_step=pause_msg,
+                )
+                db.log_activity(
+                    pause_msg,
+                    level="WARN",
+                    stage="QUOTA_GUARD",
+                    job_id=job_id,
+                    generation_id=gen_id,
+                )
+                sync_job_manifest(job_id, rewrite_all_sidecars=False)
+                return False
+
+            note = (
+                f"Deferred ({tool_err}) — recycling tab before next shot."
+                if gen_fails < 2
+                else str(tool_err)
+            )
+            db.update_generation(gen_id, status="failed", error=note)
+            db.log_activity(
+                f"[Slot #{slot_id}] Turn #{idx}: {tool_err} (streak {streak}/3 — cooling down 4.5s & opening fresh tab).",
+                level="WARN",
+                stage="QUOTA_GUARD",
+                job_id=job_id,
+                generation_id=gen_id,
+            )
+            sync_job_manifest(job_id, rewrite_all_sidecars=False)
+            for _ in range(9):
+                if self._should_abort_job(job_id):
+                    break
+                time.sleep(0.5)
+            return True
         except ReferenceTooSimilarError as sim_err:
             interrupted = self._resolve_interrupted_turn(job_id, gen)
             if interrupted is not None:
@@ -817,7 +888,9 @@ class JobRunner:
             threshold=dhash_thresh,
         )
 
-        export_mode = (job.get("metadata_export_mode") or "json").strip().lower()
+        export_mode = normalize_metadata_export_mode(
+            job.get("metadata_export_mode"), default="csv"
+        )
 
         if export_mode == "none":
             gen = db.update_generation(
@@ -893,9 +966,9 @@ class JobRunner:
                 error="",
                 completed_at=now_iso(),
             )
-            sync_generation_and_manifest(job_id, gen_id)
+            sync_generation_and_manifest(job_id, gen_id, force_manifest=True)
             db.log_activity(
-                f"Completed #{idx} -> {saved_file['image_file']} + {export_mode.upper()} Picassy SEO ({saved_file['width']}x{saved_file['height']})",
+                f"Completed #{idx} -> {saved_file['image_file']} + CSV Picassy SEO ({saved_file['width']}x{saved_file['height']})",
                 stage="EXPORT",
                 job_id=job_id,
                 generation_id=gen_id,
@@ -1042,18 +1115,57 @@ class JobRunner:
                 settings = db.get_settings(include_secrets=False)
                 slots = normalize_cdp_slots(settings.get("cdp_slots"))
                 my_cfg = next((s for s in slots if int(s["slot_id"]) == slot_id), slots[0])
-                if not my_cfg.get("enabled", False):
-                    with self._wake_cond:
-                        self._wake_cond.wait_for(
-                            lambda: self._wake_seq != seen_seq or self._stop_worker,
-                            timeout=1.6,
-                        )
-                    continue
+                slot_enabled = bool(my_cfg.get("enabled", False))
+                pinned_ids: List[int] = []
+                if not slot_enabled:
+                    pinned_ids = db.get_pinned_running_job_ids_for_slot(slot_id)
+                    if not pinned_ids:
+                        with self._wake_cond:
+                            self._wake_cond.wait_for(
+                                lambda: self._wake_seq != seen_seq or self._stop_worker,
+                                timeout=1.6,
+                            )
+                        continue
 
                 if slot_id > 1:
                     time.sleep((slot_id - 1) * 0.45)
 
-                slot_statuses = list_cdp_slots_status(slots=slots, force=False)
+                if not slot_enabled:
+                    my_port = int(my_cfg["port"])
+                    my_st = check_cdp_status(force=False, cdp_port=my_port, slot_id=slot_id)
+                    slot_online = bool(my_st and my_st.get("connected"))
+                    if not slot_online:
+                        for pid in pinned_ids:
+                            p_job = db.get_job(pid)
+                            if p_job and "disabled" not in str(p_job.get("current_step") or "").lower():
+                                db.update_job(
+                                    pid,
+                                    current_step=(
+                                        f"Slot #{slot_id} (:{my_port}) is disabled & offline — "
+                                        f"click S{slot_id} :{my_port} in sidebar or enable in Settings."
+                                    ),
+                                )
+                        with self._wake_cond:
+                            self._wake_cond.wait_for(
+                                lambda: self._wake_seq != seen_seq or self._stop_worker,
+                                timeout=1.6,
+                            )
+                        continue
+                    # Chrome on this port is already connected & user explicitly pinned a job here: auto-enable & run.
+                    updated_slots = [
+                        {**s, "enabled": True} if int(s["slot_id"]) == slot_id else s
+                        for s in slots
+                    ]
+                    db.update_settings({"cdp_slots": updated_slots})
+                    db.log_activity(
+                        f"Auto-enabled Chrome Slot #{slot_id} (:{my_port}) because browser is connected for pinned Job #{pinned_ids[0]}.",
+                        stage="RUNNER",
+                        job_id=pinned_ids[0],
+                    )
+                    slot_statuses = list_cdp_slots_status(slots=updated_slots, force=False)
+                else:
+                    slot_statuses = list_cdp_slots_status(slots=slots, force=False)
+
                 my_st = next((s for s in slot_statuses if int(s["slot_id"]) == slot_id), None)
                 slot_online = bool(my_st and my_st.get("connected"))
                 any_enabled_online = any(
@@ -1066,6 +1178,7 @@ class JobRunner:
                     slot_online=slot_online,
                     allow_auto_cdp=allow_auto_cdp,
                     allow_api_jobs=True,
+                    pinned_only=False,
                 )
                 if next_job_id and not self._should_abort_job(next_job_id):
                     try:

@@ -32,6 +32,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import {
   EXPORT_IMAGE_FORMAT_OPTIONS,
+  formatPicassyKeyword,
   getReferenceImageUrl,
   suggestVariationAxes,
   type CaptionStylePreset,
@@ -188,7 +189,7 @@ export function CreateScreen({
   )
   const [metadataExportMode, setMetadataExportMode] =
     React.useState<MetadataExportMode>(
-      settings?.default_metadata_export_mode || "json"
+      settings?.default_metadata_export_mode || "csv"
     )
   const [exportImageFormat, setExportImageFormat] =
     React.useState<ExportImageFormat>(
@@ -607,10 +608,10 @@ export function CreateScreen({
                     const nextVal = e.target.value
                     setTheme(nextVal)
                     if (!primaryTagManualRef.current) {
-                      setPrimaryTag(nextVal)
+                      setPrimaryTag(formatPicassyKeyword(nextVal))
                     }
                   }}
-                  placeholder="What theme are we exploring? (e.g., Sympathy Messages)"
+                  placeholder="What theme are we exploring? (e.g., beautiful-image or Sympathy Messages)"
                   className="min-h-[54px] w-full rounded-2xl bg-white/[0.035] px-4 text-base font-medium text-white placeholder:text-[#646b78] ring-1 ring-white/[0.1] outline-none focus:ring-2 focus:ring-white/30"
                 />
 
@@ -626,7 +627,7 @@ export function CreateScreen({
                       onClick={() => {
                         setTheme(sample.theme)
                         if (!primaryTagManualRef.current) {
-                          setPrimaryTag(sample.theme)
+                          setPrimaryTag(formatPicassyKeyword(sample.theme))
                         }
                         setBasePrompt(sample.base)
                         handleApplyPreset(sample.preset)
@@ -1259,24 +1260,23 @@ export function CreateScreen({
               {/* Post-Image Caption & Description Prompt + Export Mode Switch */}
               <div className="rounded-2xl bg-amber-400/[0.04] p-4 ring-1 ring-amber-400/20 flex flex-col gap-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold text-white">
-                      Post-Image Caption & Export Mode (Chuẩn Pinterest / Trang ảnh)
-                    </p>
-                    <p className="text-[11px] text-[#9ca3af]">
-                      Sau mỗi ảnh được tạo, tự động thêm 1 prompt để tạo Caption (Title), Description & Hashtags hoặc chọn chế độ xuất file.
-                    </p>
-                  </div>
+                      <div>
+                        <p className="text-xs font-semibold text-white">
+                          Post-Image Picassy CSV Export (pin-import.csv)
+                        </p>
+                        <p className="text-[11px] text-[#9ca3af]">
+                          Xuất 1 file <code className="text-amber-300">pin-import.csv</code> chuẩn 8 cột (File name, Title Case không gạch, Description, Alt text, Category, Tag, Peak, Prompt) hoặc chỉ xuất ảnh.
+                        </p>
+                      </div>
 
-                  {/* 3-Way Switch: Xuất JSON | Xuất Caption | Không */}
-                  <div className="flex items-center rounded-full bg-black/40 p-1 ring-1 ring-white/[0.1] shrink-0">
-                    {(
-                      [
-                        ["json", "Xuất JSON (.json)"],
-                        ["caption", "Xuất Caption (.txt)"],
-                        ["none", "Không (Chỉ ảnh)"],
-                      ] as const
-                    ).map(([mKey, mLabel]) => {
+                      {/* 2-Way Switch: Xuất CSV | Không (Chỉ ảnh) */}
+                      <div className="flex items-center rounded-full bg-black/40 p-1 ring-1 ring-white/[0.1] shrink-0">
+                        {(
+                          [
+                            ["csv", "Xuất CSV (pin-import.csv)"],
+                            ["none", "Không (Chỉ ảnh)"],
+                          ] as const
+                        ).map(([mKey, mLabel]) => {
                       const active = metadataExportMode === mKey
                       return (
                         <button
@@ -1397,7 +1397,7 @@ export function CreateScreen({
                             : [{ slot_id: 1, port: 9222, label: "Slot 1", enabled: true, connected: false, open_engines: [] as string[], active_job_id: null, active_generation_id: null }]
                           ).map((s) => (
                             <SelectItem key={s.slot_id} value={String(s.slot_id)}>
-                              {`Slot #${s.slot_id} (:${s.port}) · ${s.connected ? "Online" : s.enabled ? "Standby" : "Disabled"}`}
+                              {`Slot #${s.slot_id} (:${s.port}) · ${s.enabled ? (s.connected ? "Online" : "Standby") : s.connected ? "Connected (Disabled)" : "Disabled"}`}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1983,6 +1983,8 @@ export function CreateScreen({
               {/* Export Contract Summary */}
               {(() => {
                 const kwSlug = slugifyKeywordPreview(primaryTag || theme)
+                const cleanTitleKw =
+                  formatPicassyKeyword(primaryTag || theme) || "Beautiful Image"
                 const ext = exportImageFormat === "original" ? "orig" : exportImageFormat
                 const f1 = filenameStyle === "studio_seq" ? `001_${kwSlug}` : `${kwSlug}-1`
                 const f2 = filenameStyle === "studio_seq" ? `002_${kwSlug}` : `${kwSlug}-2`
@@ -1992,31 +1994,21 @@ export function CreateScreen({
                       exports/YYYY-MM-DD_HHMMSS_{kwSlug.slice(0, 20)}/
                     </p>
                     <p className="pl-2 text-[10px] text-amber-200/80">
-                      Tag: "{(primaryTag || theme || "keyword").trim()}" · Category: {category}
+                      Title Prefix &amp; Tag: &quot;{cleanTitleKw}&quot; · Category: {category}
                     </p>
-                    {metadataExportMode === "json" && (
+                    {metadataExportMode === "csv" ? (
                       <>
-                        <p className="pl-2 text-[#646b78]">
-                          ├── {f1}.{ext} + {f1}.json
+                        <p className="pl-2 text-[#d1d5db]">
+                          ├── {f1}.{ext}
                         </p>
-                        <p className="pl-2 text-[#646b78]">
-                          ├── {f2}.{ext} + {f2}.json
+                        <p className="pl-2 text-[#d1d5db]">
+                          ├── {f2}.{ext}
                         </p>
-                        <p className="pl-2 text-[#646b78]">└── manifest.json</p>
+                        <p className="pl-2 text-amber-300">
+                          └── pin-import.csv (8 cols · Peak + Prompt)
+                        </p>
                       </>
-                    )}
-                    {metadataExportMode === "caption" && (
-                      <>
-                        <p className="pl-2 text-amber-300/80">
-                          ├── {f1}.{ext} + {f1}.txt
-                        </p>
-                        <p className="pl-2 text-amber-300/80">
-                          ├── {f2}.{ext} + {f2}.txt
-                        </p>
-                        <p className="pl-2 text-amber-300/80">└── captions.txt (Picassy SEO)</p>
-                      </>
-                    )}
-                    {metadataExportMode === "none" && (
+                    ) : (
                       <>
                         <p className="pl-2 text-emerald-300/80">
                           ├── {f1}.{ext} (Image only)
@@ -2054,7 +2046,7 @@ export function CreateScreen({
                       <p className="mt-0.5 font-mono-tech text-[11px] text-[#9ca3af]">
                         #{job.id} · {job.counts.completed}/{job.counts.total} done · {job.aspect_ratio} ·{" "}
                         {(job.export_image_format || "original").toUpperCase()} ·{" "}
-                        {(job.metadata_export_mode || "json").toUpperCase()}
+                        {(job.metadata_export_mode || "csv").toUpperCase()}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5">

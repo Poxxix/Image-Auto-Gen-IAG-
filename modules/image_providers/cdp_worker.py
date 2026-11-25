@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Optional
 from config import BASE_DIR
 from modules.image_providers.browser_cdp_provider import (
     ProviderAuthError,
+    ProviderToolUnavailableError,
     ReferenceTooSimilarError,
     generate_image_via_cdp,
 )
@@ -228,6 +229,8 @@ def run_cdp_worker_task(
             msg = str(final_err.get("msg") or "CDP worker failed.")
             if kind == "auth":
                 raise ProviderAuthError(msg)
+            if kind == "tool_unavailable":
+                raise ProviderToolUnavailableError(msg)
             if kind == "similarity":
                 raise ReferenceTooSimilarError(msg, similarity=final_err.get("similarity") or {})
             raise RuntimeError(msg)
@@ -396,6 +399,8 @@ def _worker_entrypoint() -> None:
         raise RuntimeError(f"Unknown CDP worker task: {task}")
     except ProviderAuthError as auth_err:
         _emit("error", kind="auth", msg=str(auth_err))
+    except ProviderToolUnavailableError as tool_err:
+        _emit("error", kind="tool_unavailable", msg=str(tool_err))
     except ReferenceTooSimilarError as sim_err:
         _emit("error", kind="similarity", msg=str(sim_err), similarity=sim_err.similarity)
     except Exception as exc:

@@ -14,12 +14,13 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from database.db_manager import db
+from database.db_manager import DatabaseManager, db
 from modules.export_manager import (
     build_job_zip_bytes,
     cleanup_and_resequence_after_delete_generation,
@@ -138,29 +139,34 @@ def test_module_3() -> None:
     assert 100 <= len(fitted["alt_text"]) <= 125
     assert "#" not in fitted["description"]
 
-    # Validate 4-slot atomic job claiming isolation (1 Job = 1 Slot)
-    j1 = db.create_job(theme="Slot Test 1", primary_tag="Sympathy Messages", category="Art", preferred_cdp_slot=1)
-    j2 = db.create_job(theme="Slot Test 2", primary_tag="Friendship Quotes", category="Wallpaper", preferred_cdp_slot=2)
-    try:
-        db.update_job(j1["id"], status="running")
-        db.update_job(j2["id"], status="running")
-        c1 = db.claim_next_running_job_for_slot(1, slot_online=True)
-        c2 = db.claim_next_running_job_for_slot(2, slot_online=True)
-        assert c1 == j1["id"] and c2 == j2["id"], f"Slot claim mismatch: c1={c1}, c2={c2}"
-        assert db.claim_next_running_job_for_slot(3, slot_online=True) is None
-        print("[PASS] Multi-slot job isolation (4-slot pool) + Picassy SEO bounds (60 / 160 / 100-125) verified.")
-    finally:
-        shutil.rmtree(Path(j1["export_dir"]), ignore_errors=True)
-        shutil.rmtree(Path(j2["export_dir"]), ignore_errors=True)
-        db.delete_job(j1["id"])
-        db.delete_job(j2["id"])
+    # Validate 4-slot atomic job claiming isolation (1 Job = 1 Slot) on an isolated DB
+    with tempfile.TemporaryDirectory(prefix="studio_slot_audit_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        iso_db = DatabaseManager(db_path=tmp_path / "slot_audit.db")
+        try:
+            iso_db.update_settings({"export_root_dir": str(tmp_path / "exports")})
+            j1 = iso_db.create_job(theme="Slot Test 1", primary_tag="Sympathy Messages", category="Art", preferred_cdp_slot=1)
+            j2 = iso_db.create_job(theme="Slot Test 2", primary_tag="Friendship Quotes", category="Wallpaper", preferred_cdp_slot=2)
+            iso_db.update_job(j1["id"], status="running")
+            iso_db.update_job(j2["id"], status="running")
+            c1 = iso_db.claim_next_running_job_for_slot(1, slot_online=True)
+            c2 = iso_db.claim_next_running_job_for_slot(2, slot_online=True)
+            assert c1 == j1["id"] and c2 == j2["id"], f"Slot claim mismatch: c1={c1}, c2={c2}"
+            assert iso_db.claim_next_running_job_for_slot(3, slot_online=True) is None
+            print("[PASS] Multi-slot job isolation (4-slot pool) + Picassy SEO bounds (60 / 160 / 100-125) verified.")
+        finally:
+            iso_db.close()
 
 
 def test_module_4() -> None:
-    print("\n=== MODULE 4: PICASSY FILENAME (<kw>-1, <kw>-2), EXPORT MODES & RESEQUENCE ===")
+    import csv
+    from io import StringIO
+    from modules.export_manager import CSV_FILENAME, CSV_HEADERS
+
+    print("\n=== MODULE 4: PICASSY CSV EXPORT (pin-import.csv), PEAK FLAG, TITLE CASE & RESEQUENCE ===")
     job = db.create_job(
-        theme="Beautiful girl with bikini",
-        primary_tag="Beautiful girl with bikini",
+        theme="beautiful-girl-with-bikini",
+        primary_tag="beautiful-girl-with-bikini",
         category="Photography Topics",
         filename_style="picassy_slug",
         base_prompt="Warm golden sunset at a clean coastal beach",
@@ -169,11 +175,12 @@ def test_module_4() -> None:
         target_count=2,
         aspect_ratio="1:1",
         metadata_language="English",
-        metadata_export_mode="json",
+        metadata_export_mode="csv",
         caption_prompt="Describe naturally for Picassy SEO",
         model="chrome-cdp/gemini",
     )
     job_id = job["id"]
+    assert job["primary_tag"] == "Beautiful Girl With Bikini", f"Expected Title Case tag, got {job['primary_tag']}"
     try:
         for idx, color in [(1, (45, 40, 38)), (2, (80, 65, 55))]:
             gen = db.create_generation(
@@ -193,10 +200,11 @@ def test_module_4() -> None:
             gen = db.update_generation(
                 gen["id"],
                 status="metadata_pending",
+                is_peak=(idx == 1),
                 **saved,
             )
             meta = write_generation_metadata(job, gen, use_browser_turn=False)
-            assert meta["title"].startswith("Beautiful girl with bikini") and len(meta["title"]) <= 60
+            assert meta["title"].startswith("Beautiful Girl With Bikini") and len(meta["title"]) <= 60
             assert len(meta["description"]) <= 160
             assert 100 <= len(meta["alt_text"]) <= 125
             gen = db.update_generation(
@@ -208,36 +216,38 @@ def test_module_4() -> None:
                 hashtags=meta["hashtags"],
                 status="completed",
             )
-            sync_generation_and_manifest(job_id, gen["id"])
+            sync_generation_and_manifest(job_id, gen["id"], force_manifest=True)
 
         exp_dir = Path(job["export_dir"])
-        # 1. Verify Picassy naming + JSON sidecars
+        csv_file = exp_dir / CSV_FILENAME
         assert (exp_dir / "beautiful-girl-with-bikini-1.png").exists()
-        assert (exp_dir / "beautiful-girl-with-bikini-1.json").exists()
         assert (exp_dir / "beautiful-girl-with-bikini-2.png").exists()
-        assert (exp_dir / "beautiful-girl-with-bikini-2.json").exists()
-        assert (exp_dir / "manifest.json").exists()
-        print("[PASS] Picassy slug naming & JSON export verified: beautiful-girl-with-bikini-1/2.png + .json.")
+        assert csv_file.exists()
+        assert not list(exp_dir.glob("*.json")) and not list(exp_dir.glob("*.txt"))
 
-        # 2. Switch to 'caption' mode and verify .txt files replace .json files
-        job = db.update_job(job_id, metadata_export_mode="caption")
-        sync_job_manifest(job_id, job=job)
-        assert (exp_dir / "beautiful-girl-with-bikini-1.txt").exists()
-        assert (exp_dir / "beautiful-girl-with-bikini-2.txt").exists()
-        assert (exp_dir / "captions.txt").exists()
-        assert not (exp_dir / "beautiful-girl-with-bikini-1.json").exists()
-        print("[PASS] Export Mode 'caption': verified -1/-2 .txt files + captions.txt (cleaned .json).")
+        raw_csv_bytes = csv_file.read_bytes()
+        assert not raw_csv_bytes.startswith(b"\xef\xbb\xbf"), "CSV must not contain UTF-8 BOM"
+        rows = list(csv.reader(StringIO(raw_csv_bytes.decode("utf-8"))))
+        assert rows[0] == CSV_HEADERS, f"Unexpected CSV headers: {rows[0]}"
+        assert len(rows) == 3, f"Expected header + 2 rows, got {len(rows)}"
+        assert rows[1][0] == "beautiful-girl-with-bikini-1.png"
+        assert rows[1][1].startswith("Beautiful Girl With Bikini")
+        assert rows[1][4] == "Photography Topics"
+        assert rows[1][5] == "Beautiful Girl With Bikini"
+        assert rows[1][6] == "TRUE"
+        assert "Coastal sunset portrait #1" in rows[1][7]
+        assert rows[2][6] == "FALSE"
+        print("[PASS] Picassy slug naming & 8-column `pin-import.csv` (Title Case + Peak + Prompt) verified.")
 
-        # 3. Switch to 'none' mode and verify only images remain
+        # 2. Switch to 'none' mode and verify pure image-only directory (no .csv/.json/.txt)
         job = db.update_job(job_id, metadata_export_mode="none")
         sync_job_manifest(job_id, job=job)
         assert (exp_dir / "beautiful-girl-with-bikini-1.png").exists()
-        assert not (exp_dir / "beautiful-girl-with-bikini-1.txt").exists()
-        assert not (exp_dir / "captions.txt").exists()
+        assert not csv_file.exists()
         print("[PASS] Export Mode 'none': verified pure image-only directory.")
 
-        # 4. Switch back to 'json' and test deleting Shot #1 -> Shot #2 re-sequences to -1 on disk
-        job = db.update_job(job_id, metadata_export_mode="json")
+        # 3. Switch back to 'csv' and test deleting Shot #1 -> Shot #2 re-sequences to -1 on disk & inside pin-import.csv
+        job = db.update_job(job_id, metadata_export_mode="csv")
         sync_job_manifest(job_id, job=job)
         first_gen_id = job["generations"][0]["id"]
         del_res = db.delete_generation_with_resequence(first_gen_id)
@@ -251,7 +261,9 @@ def test_module_4() -> None:
         assert remaining["image_file"] == "beautiful-girl-with-bikini-1.png"
         assert (exp_dir / "beautiful-girl-with-bikini-1.png").exists()
         assert not (exp_dir / "beautiful-girl-with-bikini-2.png").exists()
-        print("[PASS] Delete & Resequence: deleted -1 and renamed -2 -> -1 on disk & SQLite.")
+        rows_after = list(csv.reader(StringIO(csv_file.read_text(encoding="utf-8"))))
+        assert len(rows_after) == 2 and rows_after[1][0] == "beautiful-girl-with-bikini-1.png"
+        print("[PASS] Delete & Resequence: deleted -1, renamed -2 -> -1, and synced `pin-import.csv`.")
 
         # 5. Verify per-job export_image_format conversion (.jpg & .webp)
         jpg_job = db.create_job(

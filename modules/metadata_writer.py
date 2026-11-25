@@ -11,6 +11,7 @@ from config import (
     CDP_PORT,
     DEFAULT_CAPTION_PROMPT,
     DEFAULT_PICASSY_CATEGORIES,
+    format_picassy_keyword,
     split_api_keys,
 )
 from database.db_manager import db
@@ -374,7 +375,8 @@ def _synthesize_structured_metadata(
     if (known_width <= 0 or known_height <= 0) and path_obj and path_obj.exists():
         inspect_image_bytes(path_obj.read_bytes())
 
-    kw = (primary_tag or theme or "Artwork").strip()
+    raw_kw = (primary_tag or theme or "Artwork").strip()
+    kw = format_picassy_keyword(raw_kw) or raw_kw
     angle = str(variation_axes.get("camera_angle") or "editorial close-up perspective").strip().rstrip(".")
     lighting = str(variation_axes.get("lighting") or "soft natural daylight").strip().rstrip(".")
     comp = str(variation_axes.get("composition") or "balanced hero framing").strip().rstrip(".")
@@ -452,7 +454,8 @@ def write_generation_metadata(
     grammatical synthesis fallback.
     """
     theme = job["theme"]
-    primary_tag = (job.get("primary_tag") or theme).strip()
+    raw_pt = (job.get("primary_tag") or theme).strip()
+    primary_tag = format_picassy_keyword(raw_pt) or raw_pt
     category = (job.get("category") or "").strip()
     metadata_language = job.get("metadata_language") or "English"
     caption_prompt = job.get("caption_prompt") or DEFAULT_CAPTION_PROMPT

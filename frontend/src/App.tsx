@@ -403,6 +403,7 @@ export function App() {
       reference_id?: number | null
       clear_reference?: boolean
       is_locked?: boolean
+      is_peak?: boolean
       title?: string
       caption?: string
       description?: string
@@ -803,6 +804,13 @@ export function App() {
           onRetryFailed={handleRetryFailed}
           onRetrySingleTurn={handleRetrySingleTurn}
           onSkipTurn={handleSkipTurn}
+          onEnableSlot={(slotId) =>
+            handleLaunchCdp(
+              "gemini",
+              false,
+              slotId || activeJob?.preferred_cdp_slot || 1
+            )
+          }
           onRestartBrowser={(slotId) =>
             handleLaunchCdp(
               "gemini",

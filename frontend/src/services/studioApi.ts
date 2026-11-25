@@ -2,7 +2,35 @@ export type StudioTab = "create" | "plan" | "run" | "gallery" | "settings"
 
 export type ReferenceMode = "prompt_only" | "local_upload" | "pinterest"
 export type RunMode = "fixed" | "continuous"
-export type MetadataExportMode = "json" | "caption" | "none"
+export type MetadataExportMode = "csv" | "none"
+
+const UPPER_ACRONYMS = new Set([
+  "ai", "seo", "3d", "2d", "4k", "8k", "hd", "ui", "ux", "tv", "diy", "led", "uv", "rgb", "y2k",
+])
+
+export function formatPicassyKeyword(rawText?: string | null): string {
+  let s = (rawText || "").trim()
+  if (!s) return ""
+  s = s.replace(/\.(?:png|jpe?g|webp|gif|avif)$/i, "").trim()
+  if (/^\d{3}_[a-zA-Z]/.test(s)) {
+    s = s.replace(/^\d{3}_+/, "")
+  } else if (/[-_][a-zA-Z].*[-_]\d+$/.test(s) || /^[a-zA-Z][a-zA-Z0-9]*[-_]\d+$/.test(s)) {
+    s = s.replace(/[-_]\d+$/, "")
+  }
+  s = s.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim()
+  if (!s) return ""
+  return s
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => {
+      const low = w.toLowerCase()
+      if (UPPER_ACRONYMS.has(low)) return low.toUpperCase()
+      if (w.length >= 2 && w === w.toUpperCase()) return w
+      if (/^\d+[a-zA-Z]+$/.test(w)) return w.toLowerCase()
+      return w.charAt(0).toUpperCase() + w.slice(1)
+    })
+    .join(" ")
+}
 export type ExportImageFormat = "original" | "png" | "jpg" | "webp"
 export type FilenameStyle = "picassy_slug" | "studio_seq"
 export type MetadataProviderType =
@@ -157,6 +185,7 @@ export interface GenerationItem {
   reference_id: number | null
   reference: ReferenceItem | null
   is_locked: boolean
+  is_peak?: boolean
   model: string
   status: GenerationStatus
   title: string
@@ -555,6 +584,7 @@ export async function updateGeneration(
     reference_id?: number | null
     clear_reference?: boolean
     is_locked?: boolean
+    is_peak?: boolean
     title?: string
     caption?: string
     description?: string
@@ -785,14 +815,6 @@ export function getGenerationImageUrl(
   return `/api/generations/${genId}/image${qs ? `?${qs}` : ""}`
 }
 
-export function getGenerationSidecarUrl(genId: number): string {
-  return `/api/generations/${genId}/sidecar`
-}
-
-export function getGenerationCaptionFileUrl(genId: number): string {
-  return `/api/generations/${genId}/caption-file`
-}
-
 export function getReferenceImageUrl(refId: number): string {
   return `/api/references/${refId}/image`
 }
@@ -801,12 +823,8 @@ export function getJobZipUrl(jobId: number): string {
   return `/api/jobs/${jobId}/zip`
 }
 
-export function getJobManifestUrl(jobId: number): string {
-  return `/api/jobs/${jobId}/manifest`
-}
-
-export function getJobCaptionsBundleUrl(jobId: number): string {
-  return `/api/jobs/${jobId}/captions-bundle`
+export function getJobCsvUrl(jobId: number): string {
+  return `/api/jobs/${jobId}/csv`
 }
 
 export interface SuggestAxesPayload {

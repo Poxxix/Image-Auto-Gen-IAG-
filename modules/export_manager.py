@@ -1,19 +1,38 @@
-from io import BytesIO
-import json
+import csv
+from io import BytesIO, StringIO
 import os
+from pathlib import Path
 import platform
+import re
+import shutil
 import subprocess
 import tempfile
 import threading
 import time
+from typing import Any, Dict, List, Optional
 import zipfile
-from pathlib import Path
-from typing import Any, Dict, Optional
 from PIL import Image
 
-from config import normalize_export_image_format, normalize_filename_style
-from database.db_manager import db, now_iso, slugify_theme
+from config import (
+    format_picassy_keyword,
+    normalize_export_image_format,
+    normalize_filename_style,
+    normalize_metadata_export_mode,
+)
+from database.db_manager import db, slugify_theme
 from modules.reference_sources.image_utils import inspect_image_bytes
+
+CSV_FILENAME = "pin-import.csv"
+CSV_HEADERS: List[str] = [
+    "File name",
+    "title",
+    "description",
+    "alt_text",
+    "categories",
+    "tags",
+    "Peak of Picassy",
+    "prompt",
+]
 
 _MANIFEST_LOCK = threading.Lock()
 _MANIFEST_LAST_WRITE: Dict[int, float] = {}
@@ -32,7 +51,7 @@ def _get_job_sync_lock(job_id: int) -> threading.Lock:
 def build_generation_file_prefix(job: Dict[str, Any], index_num: int) -> str:
     """
     Returns file basename prefix for an image turn:
-    - `picassy_slug` (default): `<keyword-slug>-<1,2,3...>` e.g. `beautiful-girl-with-bikini-1`
+    - `picassy_slug` (default): `<keyword-slug>-<1,2,3...>` e.g. `beautiful-image-1`
     - `studio_seq` (legacy): `<001>_<theme-slug>` e.g. `001_cafe-mua-thu`
     """
     idx = int(index_num)
@@ -62,29 +81,22 @@ def _atomic_write_bytes(dest_path: Path, data: bytes, sync_disk: bool = False) -
     os.replace(tmp_path, dest_path)
 
 
-def _atomic_write_json(dest_path: Path, payload: Dict[str, Any]) -> None:
-    raw = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
-    _atomic_write_bytes(dest_path, raw)
-
-
 def _atomic_write_text(dest_path: Path, text: str) -> None:
+    # Pure UTF-8 without BOM so bulk importers parse header `File name` cleanly
     _atomic_write_bytes(dest_path, text.encode("utf-8"))
 
 
-def _format_reference_for_export(ref: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """
-    Formats reference provenance for sidecar JSON and manifest.json without
-    copying external/Pinterest files into the export directory.
-    """
-    if not ref:
-        return None
-    return {
-        "id": ref.get("id"),
-        "source_type": ref.get("source_type"),
-        "source_ref": ref.get("source_ref") or ref.get("filename"),
-        "filename": ref.get("filename"),
-        "usage_rights": ref.get("usage_rights") or "user_provided_confirmed",
-    }
+def _sanitize_single_line(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _clean_slug_tokens_in_copy(text: str, raw_theme: str, clean_tag: str) -> str:
+    s = _sanitize_single_line(text)
+    if not s or not clean_tag:
+        return s
+    if raw_theme and ("-" in raw_theme or "_" in raw_theme) and raw_theme.lower() != clean_tag.lower():
+        s = re.sub(re.escape(raw_theme), clean_tag, s, flags=re.IGNORECASE)
+    return s
 
 
 def save_generated_image_atomically(
@@ -97,7 +109,6 @@ def save_generated_image_atomically(
     """
     Saves a generated image atomically inside `job['export_dir']` using the active filename style
     (`picassy_slug` -> `<keyword-slug>-<1,2,3...>.<ext>` or `studio_seq` -> `<001>_<slug>.<ext>`).
-    Preserves original model bytes and provenance by default (`preferred_format='original'`).
     """
     export_dir = Path(job["export_dir"])
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -151,11 +162,8 @@ def save_generated_image_atomically(
         final_info = inspect_image_bytes(final_bytes)
 
     image_file = f"{prefix}.{ext}"
-    sidecar_file = f"{prefix}.json"
-    caption_file = f"{prefix}.txt"
     image_path = export_dir / image_file
 
-    # Remove any older extension or alternate naming variant if a retry changed ext/style
     legacy_prefix = f"{idx:03d}_{slug}"
     for cand_prefix in {prefix, legacy_prefix}:
         for old_ext in ("png", "jpg", "jpeg", "webp"):
@@ -171,8 +179,8 @@ def save_generated_image_atomically(
     return {
         "image_file": image_file,
         "image_path": str(image_path),
-        "sidecar_file": sidecar_file,
-        "caption_file": caption_file,
+        "sidecar_file": "",
+        "caption_file": "",
         "mime_type": final_info["mime_type"],
         "width": final_info["width"],
         "height": final_info["height"],
@@ -182,80 +190,81 @@ def save_generated_image_atomically(
     }
 
 
-def format_caption_text(job: Dict[str, Any], generation: Dict[str, Any]) -> str:
+def _generation_has_saved_image(export_dir: Path, gen: Dict[str, Any]) -> bool:
+    img_file = str(gen.get("image_file") or "").strip()
+    if not img_file:
+        return False
+    img_path_str = str(gen.get("image_path") or "").strip()
+    if img_path_str and Path(img_path_str).exists():
+        return True
+    return (export_dir / img_file).exists()
+
+
+def build_generation_csv_row(job: Dict[str, Any], generation: Dict[str, Any]) -> List[str]:
     """
-    Formats a single image's Picassy SEO metadata cleanly (`Primary Tag`, `Category`,
-    `Title`, `Description`, `Alt Text`) into copy-paste-ready plain text.
+    Builds a single Picassy CSV row matching `pin-import-sample.csv`:
+    [File name, title, description, alt_text, categories, tags, Peak of Picassy, prompt]
     """
-    idx = int(generation.get("index_num") or 1)
-    primary_tag = (job.get("primary_tag") or job.get("theme") or "").strip()
-    category = (job.get("category") or "").strip()
-    title = (generation.get("title") or "").strip()
-    description = (generation.get("description") or "").strip()
-    alt_text = (generation.get("alt_text") or "").strip()
-    img_file = (
-        generation.get("image_file") or build_generation_file_prefix(job, idx)
-    ).strip()
+    raw_theme = str(job.get("theme") or "").strip()
+    raw_tag_src = str(job.get("primary_tag") or raw_theme or generation.get("image_file") or "").strip()
+    clean_tag = format_picassy_keyword(raw_tag_src) or raw_tag_src
 
-    lines = [f"=== #{idx} · {img_file} ==="]
-    if category:
-        lines.append(f"Category: {category}")
-    if primary_tag:
-        lines.append(f"Tag chính: {primary_tag}")
-    lines.append(f"Title ({len(title)}/60): {title}")
-    lines.append(f"Description ({len(description)}/160): {description}")
-    if alt_text:
-        lines.append(f"Alt text ({len(alt_text)}/100-125): {alt_text}")
-    lines.append("")
-    return "\n".join(lines)
+    image_file = _sanitize_single_line(generation.get("image_file"))
+    raw_title = _clean_slug_tokens_in_copy(generation.get("title") or "", raw_theme, clean_tag)
+    if not raw_title:
+        raw_title = clean_tag[:60]
+    elif clean_tag and not raw_title.lower().startswith(clean_tag.lower()):
+        tail = re.sub(re.escape(clean_tag), "", raw_title, flags=re.IGNORECASE).strip(" :-–—|.,")
+        raw_title = f"{clean_tag} {tail}".strip()[:60] if tail else clean_tag[:60]
+    else:
+        # Ensure exact Title-Case prefix
+        raw_title = f"{clean_tag}{raw_title[len(clean_tag):]}"[:60].strip()
+
+    desc = _clean_slug_tokens_in_copy(generation.get("description") or "", raw_theme, clean_tag)[:160].strip()
+    alt_text = _clean_slug_tokens_in_copy(generation.get("alt_text") or "", raw_theme, clean_tag)[:125].strip()
+    category = _sanitize_single_line(job.get("category"))
+    peak_flag = "TRUE" if bool(generation.get("is_peak")) else "FALSE"
+    prompt_val = _sanitize_single_line(generation.get("prompt_final"))
+
+    return [
+        image_file,
+        raw_title,
+        desc,
+        alt_text,
+        category,
+        clean_tag,
+        peak_flag,
+        prompt_val,
+    ]
 
 
-def write_caption_txt(job: Dict[str, Any], generation: Dict[str, Any]) -> Path:
-    """Writes sidecar `.txt` alongside the image file when in 'caption' export mode."""
+def format_job_csv_text(job: Dict[str, Any]) -> str:
+    """
+    Serializes all saved images in `job` into RFC-4180 CSV (`UTF-8` no BOM, `\r\n` CRLF)
+    matching `pin-import-sample.csv`.
+    """
     export_dir = Path(job["export_dir"])
-    export_dir.mkdir(parents=True, exist_ok=True)
-    idx = int(generation["index_num"])
-    caption_name = generation.get("caption_file") or f"{build_generation_file_prefix(job, idx)}.txt"
-    caption_path = export_dir / caption_name
+    buf = StringIO()
+    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
+    writer.writerow(CSV_HEADERS)
+    for gen in job.get("generations") or []:
+        if _generation_has_saved_image(export_dir, gen):
+            writer.writerow(build_generation_csv_row(job, gen))
+    return buf.getvalue()
 
-    content = format_caption_text(job, generation)
-    _atomic_write_text(caption_path, content)
-    return caption_path
 
-
-def write_sidecar_json(job: Dict[str, Any], generation: Dict[str, Any]) -> Path:
-    """
-    Writes sidecar `.json` alongside the image file when in 'json' export mode.
-    """
-    export_dir = Path(job["export_dir"])
-    export_dir.mkdir(parents=True, exist_ok=True)
-    idx = int(generation["index_num"])
-    sidecar_name = generation.get("sidecar_file") or f"{build_generation_file_prefix(job, idx)}.json"
-    sidecar_path = export_dir / sidecar_name
-
-    payload: Dict[str, Any] = {
-        "index": idx,
-        "primary_tag": (job.get("primary_tag") or job.get("theme") or "").strip(),
-        "category": (job.get("category") or "").strip(),
-        "title": generation.get("title") or "",
-        "description": generation.get("description") or "",
-        "alt_text": generation.get("alt_text") or "",
-        "prompt_final": generation.get("prompt_final") or "",
-        "reference": _format_reference_for_export(generation.get("reference")),
-        "model": generation.get("model") or job.get("model") or "chrome-cdp/gemini",
-        "status": generation.get("status") or "planned",
-        "image_file": generation.get("image_file") or "",
-        "variation_axes": generation.get("variation_axes") or {},
-        "fixed_elements": generation.get("fixed_elements") or {},
-        "width": generation.get("width") or 0,
-        "height": generation.get("height") or 0,
-        "md5": generation.get("md5") or "",
-        "dhash": generation.get("dhash") or "",
-        "duplicate_warning": generation.get("duplicate_warning") or "",
-        "updated_at": generation.get("updated_at") or now_iso(),
-    }
-    _atomic_write_json(sidecar_path, payload)
-    return sidecar_path
+def _prune_legacy_sidecars(export_dir: Path, remove_csv: bool = False) -> None:
+    if not export_dir.exists():
+        return
+    drop_exts = {".json", ".txt"}
+    if remove_csv:
+        drop_exts.add(".csv")
+    for child in export_dir.iterdir():
+        if child.is_file() and child.suffix.lower() in drop_exts:
+            try:
+                child.unlink()
+            except Exception:
+                pass
 
 
 def sync_job_manifest(
@@ -264,9 +273,11 @@ def sync_job_manifest(
     rewrite_all_sidecars: bool = True,
 ) -> Optional[Path]:
     """
-    Synchronizes the export directory on disk according to `job['metadata_export_mode']`
-    under a per-job lock so concurrent Studio operations never race on temp files.
+    Synchronizes the export directory on disk according to `job['metadata_export_mode']` (`csv` | `none`):
+    - `csv`: cleans any legacy `.json`/`.txt` files and atomically writes `pin-import.csv`
+    - `none`: cleans `.json`/`.txt`/`.csv` files so the folder contains pure images only
     """
+    del rewrite_all_sidecars
     with _get_job_sync_lock(job_id):
         job_data = job or db.get_job(job_id)
         if not job_data:
@@ -274,139 +285,39 @@ def sync_job_manifest(
 
         export_dir = Path(job_data["export_dir"])
         _safe_mkdir(export_dir)
-        export_mode = (job_data.get("metadata_export_mode") or "json").strip().lower()
-        slug = job_data["slug"]
-        primary_tag = (job_data.get("primary_tag") or job_data.get("theme") or "").strip()
-        category = (job_data.get("category") or "").strip()
-        filename_style = normalize_filename_style(
-            job_data.get("filename_style"), default="picassy_slug"
+        export_mode = normalize_metadata_export_mode(
+            job_data.get("metadata_export_mode"), default="csv"
         )
-        manifest_path = export_dir / "manifest.json"
-        captions_bundle_path = export_dir / "captions.txt"
+        csv_path = export_dir / CSV_FILENAME
 
         try:
             if export_mode == "none":
-                if export_dir.exists():
-                    for child in export_dir.iterdir():
-                        if child.is_file() and child.suffix.lower() in (".json", ".txt"):
-                            try:
-                                child.unlink()
-                            except Exception:
-                                pass
+                _prune_legacy_sidecars(export_dir, remove_csv=True)
                 return None
 
-            if export_mode == "caption":
-                if rewrite_all_sidecars and export_dir.exists():
-                    for child in export_dir.iterdir():
-                        if child.is_file() and child.suffix.lower() == ".json":
-                            try:
-                                child.unlink()
-                            except Exception:
-                                pass
-
-                bundle_blocks = [
-                    "============================================================",
-                    f"PICASSY SEO METADATA · {job_data['theme'].upper()}",
-                    f"Set #{job_data['id']} · Category: {category or 'Auto'} · Tag: {primary_tag} · Lang: {job_data.get('metadata_language') or 'English'}",
-                    "============================================================\n",
-                ]
-                for gen in job_data.get("generations") or []:
-                    if gen.get("image_file"):
-                        if rewrite_all_sidecars:
-                            write_caption_txt(job_data, gen)
-                        bundle_blocks.append(format_caption_text(job_data, gen))
-
-                _atomic_write_text(captions_bundle_path, "\n".join(bundle_blocks))
-                return captions_bundle_path
-
-            # Default 'json' mode: remove stale .txt caption files if switched from 'caption' mode
-            if rewrite_all_sidecars and export_dir.exists():
-                for child in export_dir.iterdir():
-                    if child.is_file() and child.suffix.lower() == ".txt":
-                        try:
-                            child.unlink()
-                        except Exception:
-                            pass
-
-            items = []
-            for gen in job_data.get("generations") or []:
-                idx = int(gen["index_num"])
-                sidecar_rel = gen.get("sidecar_file") or (
-                    f"{build_generation_file_prefix(job_data, idx)}.json"
-                    if gen.get("image_file")
-                    else ""
-                )
-                if gen.get("image_file") and rewrite_all_sidecars:
-                    write_sidecar_json(job_data, gen)
-                items.append(
-                    {
-                        "index": idx,
-                        "generation_id": gen["id"],
-                        "primary_tag": primary_tag,
-                        "category": category,
-                        "title": gen.get("title") or "",
-                        "description": gen.get("description") or "",
-                        "alt_text": gen.get("alt_text") or "",
-                        "prompt_final": gen.get("prompt_final") or "",
-                        "reference": _format_reference_for_export(gen.get("reference")),
-                        "model": gen.get("model") or job_data.get("model"),
-                        "status": gen.get("status"),
-                        "image_file": gen.get("image_file") or "",
-                        "sidecar_file": sidecar_rel,
-                        "variation_axes": gen.get("variation_axes") or {},
-                        "width": gen.get("width") or 0,
-                        "height": gen.get("height") or 0,
-                        "md5": gen.get("md5") or "",
-                        "dhash": gen.get("dhash") or "",
-                        "duplicate_warning": gen.get("duplicate_warning") or "",
-                        "error": gen.get("error") or "",
-                    }
-                )
-
-            manifest_payload: Dict[str, Any] = {
-                "job_id": job_data["id"],
-                "theme": job_data["theme"],
-                "slug": slug,
-                "primary_tag": primary_tag,
-                "category": category,
-                "filename_style": filename_style,
-                "base_prompt": job_data.get("base_prompt") or "",
-                "status": job_data["status"],
-                "created_at": job_data["created_at"],
-                "updated_at": job_data["updated_at"],
-                "completed_at": job_data.get("completed_at"),
-                "settings": {
-                    "reference_mode": job_data.get("reference_mode"),
-                    "run_mode": job_data.get("run_mode"),
-                    "target_count": job_data.get("target_count"),
-                    "batch_size": job_data.get("batch_size"),
-                    "session_cap": job_data.get("session_cap"),
-                    "cycle_references": job_data.get("cycle_references"),
-                    "aspect_ratio": job_data.get("aspect_ratio"),
-                    "metadata_language": job_data.get("metadata_language"),
-                    "metadata_export_mode": export_mode,
-                    "export_image_format": normalize_export_image_format(
-                        job_data.get("export_image_format")
-                    ),
-                    "primary_tag": primary_tag,
-                    "category": category,
-                    "filename_style": filename_style,
-                    "caption_prompt": job_data.get("caption_prompt") or "",
-                    "use_ai_caption_prompt": job_data.get("use_ai_caption_prompt", True),
-                    "optimize_prompt_english": job_data.get("optimize_prompt_english"),
-                    "model": job_data.get("model"),
-                    "preset_id": job_data.get("preset_id") or "",
-                    "fixed_elements": job_data.get("fixed_elements") or {},
-                },
-                "counts": job_data.get("counts") or {},
-                "generations": items,
-            }
-            _atomic_write_json(manifest_path, manifest_payload)
-            return manifest_path
-        except PermissionError:
+            _prune_legacy_sidecars(export_dir, remove_csv=False)
+            csv_text = format_job_csv_text(job_data)
+            _atomic_write_text(csv_path, csv_text)
+            return csv_path
+        except (PermissionError, OSError):
             return None
+
+
+def get_or_build_job_csv_bytes(job_id: int) -> tuple[bytes, str]:
+    """Returns `(utf8_bytes, download_filename)` for `GET /api/jobs/{job_id}/csv`."""
+    job = db.get_job(job_id)
+    if not job:
+        raise ValueError(f"Job #{job_id} not found.")
+    csv_text = format_job_csv_text(job)
+    if normalize_metadata_export_mode(job.get("metadata_export_mode"), default="csv") == "csv":
+        try:
+            export_dir = Path(job["export_dir"])
+            _safe_mkdir(export_dir)
+            _atomic_write_text(export_dir / CSV_FILENAME, csv_text)
         except OSError:
-            return None
+            pass
+    dl_name = f"{job['slug']}-pin-import.csv" if job.get("slug") else CSV_FILENAME
+    return csv_text.encode("utf-8"), dl_name
 
 
 def sync_generation_and_manifest(
@@ -415,38 +326,23 @@ def sync_generation_and_manifest(
     force_manifest: bool = False,
 ) -> None:
     """
-    Updates ONLY the single generation's sidecar/caption file immediately, and
-    throttles full `manifest.json` / `captions.txt` rewrites for large sets (100–1000 items)
-    so per-turn disk I/O stays O(1) while final/pause/export calls always flush in full.
+    Throttles full `pin-import.csv` rewrites on huge 100–1000 image sets while flushing
+    immediately for sets <= 40 items or explicit metadata/Peak edits.
     """
+    del generation_id
     job = db.get_job(job_id)
     if not job:
         return
     gens = job.get("generations") or []
-    export_mode = (job.get("metadata_export_mode") or "json").strip().lower()
-    if export_mode != "none":
-        target_gen = next(
-            (g for g in gens if g["id"] == generation_id),
-            None,
-        )
-        if target_gen and target_gen.get("image_file"):
-            try:
-                if export_mode == "caption":
-                    write_caption_txt(job, target_gen)
-                else:
-                    write_sidecar_json(job, target_gen)
-            except OSError:
-                pass
-
     now = time.time()
     with _MANIFEST_LOCK:
         last_ts = _MANIFEST_LAST_WRITE.get(job_id, 0.0)
-        should_write = force_manifest or len(gens) <= 30 or (now - last_ts) >= 4.0
+        should_write = force_manifest or len(gens) <= 40 or (now - last_ts) >= 3.5
         if should_write:
             _MANIFEST_LAST_WRITE[job_id] = now
 
     if should_write:
-        sync_job_manifest(job_id, job=job, rewrite_all_sidecars=False)
+        sync_job_manifest(job_id, job=job)
 
 
 def cleanup_and_resequence_after_delete_generation(
@@ -454,9 +350,8 @@ def cleanup_and_resequence_after_delete_generation(
     delete_result: Dict[str, Any],
 ) -> None:
     """
-    Removes the deleted generation's files on disk and renames any re-indexed sibling
-    files using the job's active filename style (`picassy_slug` or `studio_seq`) so
-    disk files and DB stay 100% synchronized.
+    Removes the deleted generation's files on disk, renames re-indexed sibling images
+    (`-2 -> -1`), and re-syncs `pin-import.csv` so `File name` entries stay 100% matched.
     """
     job = db.get_job(job_id)
     if not job:
@@ -481,7 +376,6 @@ def cleanup_and_resequence_after_delete_generation(
             except Exception:
                 pass
 
-    # Rename files for any re-indexed generations in ascending order
     for item in delete_result.get("reindexed") or []:
         gen_id = item["id"]
         old_idx = int(item["old_index"])
@@ -489,8 +383,6 @@ def cleanup_and_resequence_after_delete_generation(
         old_prefix = build_generation_file_prefix(job, old_idx)
         new_prefix = build_generation_file_prefix(job, new_idx)
         old_img_file = item.get("image_file") or ""
-        old_sidecar = item.get("sidecar_file") or f"{old_prefix}.json"
-        old_caption = item.get("caption_file") or f"{old_prefix}.txt"
 
         updates: Dict[str, Any] = {}
         if old_img_file:
@@ -505,10 +397,10 @@ def cleanup_and_resequence_after_delete_generation(
                     pass
             updates["image_file"] = new_img_file
             updates["image_path"] = str(new_img_path)
-            updates["sidecar_file"] = f"{new_prefix}.json"
-            updates["caption_file"] = f"{new_prefix}.txt"
+            updates["sidecar_file"] = ""
+            updates["caption_file"] = ""
 
-        for old_aux in (old_sidecar, old_caption):
+        for old_aux in (f"{old_prefix}.json", f"{old_prefix}.txt"):
             aux_path = export_dir / old_aux
             if aux_path.exists():
                 try:
@@ -524,15 +416,14 @@ def cleanup_and_resequence_after_delete_generation(
 
 def build_job_zip_file(job_id: int) -> tuple[Path, str]:
     """
-    Packages all exported files inside `job['export_dir']` into a temporary ZIP file on disk
-    using `ZIP_STORED` (fast streaming with minimal RAM even for 100–1000 image sets).
-    Caller is responsible for removing the temporary path after sending the response.
+    Packages all exported images (plus `pin-import.csv` in `csv` mode) inside `job['export_dir']`
+    into a temporary ZIP file on disk using `ZIP_STORED`.
     """
     job = db.get_job(job_id)
     if not job:
         raise ValueError(f"Job #{job_id} not found.")
 
-    sync_job_manifest(job_id, job=job, rewrite_all_sidecars=False)
+    sync_job_manifest(job_id, job=job)
     export_dir = Path(job["export_dir"])
     folder_name = export_dir.name
 
@@ -549,7 +440,6 @@ def build_job_zip_file(job_id: int) -> tuple[Path, str]:
 
 
 def build_job_zip_bytes(job_id: int) -> tuple[bytes, str]:
-    """Backwards-compatible wrapper returning in-memory bytes."""
     tmp_path, filename = build_job_zip_file(job_id)
     try:
         return tmp_path.read_bytes(), filename
@@ -561,7 +451,6 @@ def build_job_zip_bytes(job_id: int) -> tuple[bytes, str]:
 
 
 def open_export_folder_in_os(job_id: int) -> Dict[str, Any]:
-    """Opens the job's export directory in macOS Finder / OS file manager."""
     job = db.get_job(job_id)
     if not job:
         raise ValueError(f"Job #{job_id} not found.")
@@ -584,10 +473,6 @@ def open_export_folder_in_os(job_id: int) -> Dict[str, Any]:
 
 
 def pick_folder_via_os_dialog(prompt_label: str = "Select Export Folder for Image Sets:") -> Optional[str]:
-    """
-    Opens the native OS folder chooser dialog (macOS Finder choose-folder via osascript)
-    and returns the selected absolute directory path, or None if cancelled.
-    """
     sys_name = platform.system().lower()
     if sys_name == "darwin":
         script = f'POSIX path of (choose folder with prompt "{prompt_label}")'
@@ -606,12 +491,6 @@ def pick_folder_via_os_dialog(prompt_label: str = "Select Export Folder for Imag
 
 
 def relocate_job_export_dir(job_id: int, new_root_dir: str) -> Dict[str, Any]:
-    """
-    Moves a job's export folder (and any already-saved images, sidecars, and manifest.json)
-    into `new_root_dir/<set_subfolder_name>` and updates SQLite paths atomically.
-    """
-    import shutil
-
     job = db.get_job(job_id)
     if not job:
         raise ValueError(f"Job #{job_id} not found.")

@@ -15,9 +15,11 @@ from config import (
     EXPORTS_DIR,
     MAX_CDP_SLOTS,
     SENSITIVE_SETTING_KEYS,
+    format_picassy_keyword,
     normalize_cdp_slots,
     normalize_export_image_format,
     normalize_filename_style,
+    normalize_metadata_export_mode,
     normalize_picassy_categories,
 )
 
@@ -57,7 +59,7 @@ SCHEMA: Dict[str, str] = {
             cycle_references INTEGER DEFAULT 1,
             aspect_ratio TEXT DEFAULT '1:1',
             metadata_language TEXT DEFAULT 'English',
-            metadata_export_mode TEXT DEFAULT 'json',
+            metadata_export_mode TEXT DEFAULT 'csv',
             export_image_format TEXT DEFAULT 'original',
             primary_tag TEXT DEFAULT '',
             category TEXT DEFAULT '',
@@ -91,6 +93,7 @@ SCHEMA: Dict[str, str] = {
             variation_axes_json TEXT DEFAULT '{}',
             reference_id INTEGER,
             is_locked INTEGER DEFAULT 0,
+            is_peak INTEGER DEFAULT 0,
             model TEXT DEFAULT '',
             status TEXT DEFAULT 'planned',
             title TEXT DEFAULT '',
@@ -263,6 +266,29 @@ class DatabaseManager:
                     conn.execute(
                         "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
                         (k, json.dumps(v), now_iso()),
+                    )
+            # Auto-upgrade legacy 'json' / 'caption' export modes to 'csv'
+            conn.execute(
+                """
+                UPDATE jobs
+                SET metadata_export_mode = 'csv'
+                WHERE metadata_export_mode IN ('json', 'caption')
+                   OR metadata_export_mode IS NULL
+                   OR metadata_export_mode = ''
+                """
+            )
+            mode_row = conn.execute(
+                "SELECT value_json FROM settings WHERE key = 'default_metadata_export_mode'"
+            ).fetchone()
+            if mode_row:
+                try:
+                    cur_mode = json.loads(mode_row["value_json"])
+                except Exception:
+                    cur_mode = mode_row["value_json"]
+                if str(cur_mode or "").strip().lower() in ("json", "caption", ""):
+                    conn.execute(
+                        "UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'default_metadata_export_mode'",
+                        (json.dumps("csv"), now_iso()),
                     )
         self._settings_cache = None
 
@@ -459,6 +485,7 @@ class DatabaseManager:
     ) -> Dict[str, Any]:
         data = dict(row)
         data["is_locked"] = bool(data.get("is_locked"))
+        data["is_peak"] = bool(data.get("is_peak"))
         data["caption"] = data.get("caption") or ""
         data["alt_text"] = data.get("alt_text") or ""
         data["hashtags"] = data.get("hashtags") or ""
@@ -586,6 +613,21 @@ class DatabaseManager:
             ).fetchone()
         return int(row["id"]) if row else None
 
+    def get_pinned_running_job_ids_for_slot(self, slot_id: int) -> List[int]:
+        sid = int(slot_id)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM jobs
+                WHERE status = 'running'
+                  AND preferred_cdp_slot = ?
+                  AND (active_cdp_slot IS NULL OR active_cdp_slot = 0)
+                ORDER BY id ASC
+                """,
+                (sid,),
+            ).fetchall()
+        return [int(r["id"]) for r in rows]
+
     def claim_next_running_job_for_slot(
         self,
         slot_id: int,
@@ -593,6 +635,7 @@ class DatabaseManager:
         slot_online: bool = True,
         allow_auto_cdp: bool = True,
         allow_api_jobs: bool = True,
+        pinned_only: bool = False,
     ) -> Optional[int]:
         """
         Atomically claims the next unclaimed `status = 'running'` job eligible for `slot_id`.
@@ -620,6 +663,8 @@ class DatabaseManager:
                 model_str = str(row["model"] or "chrome-cdp/gemini")
                 is_cdp = model_str.startswith("chrome-cdp/")
 
+                if pinned_only and pref != sid:
+                    continue
                 if pref != 0 and pref != sid:
                     continue
                 if is_cdp:
@@ -696,6 +741,8 @@ class DatabaseManager:
                 updates[key] = fields[key]
         if "is_locked" in fields:
             updates["is_locked"] = 1 if fields["is_locked"] else 0
+        if "is_peak" in fields and fields["is_peak"] is not None:
+            updates["is_peak"] = 1 if fields["is_peak"] else 0
         if "fixed_elements" in fields and fields["fixed_elements"] is not None:
             updates["fixed_elements_json"] = json.dumps(fields["fixed_elements"], ensure_ascii=False)
         if "variation_axes" in fields and fields["variation_axes"] is not None:
@@ -811,11 +858,14 @@ class DatabaseManager:
         data = dict(row)
         data["cycle_references"] = bool(data.get("cycle_references"))
         data["optimize_prompt_english"] = bool(data.get("optimize_prompt_english"))
-        data["metadata_export_mode"] = data.get("metadata_export_mode") or "json"
+        data["metadata_export_mode"] = normalize_metadata_export_mode(
+            data.get("metadata_export_mode"), default="csv"
+        )
         data["export_image_format"] = normalize_export_image_format(
             data.get("export_image_format")
         )
-        data["primary_tag"] = (data.get("primary_tag") or "").strip() or (data.get("theme") or "")
+        raw_pt = (data.get("primary_tag") or "").strip() or (data.get("theme") or "")
+        data["primary_tag"] = format_picassy_keyword(raw_pt) or raw_pt
         data["category"] = (data.get("category") or "").strip()
         data["filename_style"] = normalize_filename_style(
             data.get("filename_style"), default="picassy_slug"
@@ -889,7 +939,7 @@ class DatabaseManager:
         cycle_references: bool = True,
         aspect_ratio: str = "1:1",
         metadata_language: str = "English",
-        metadata_export_mode: str = "json",
+        metadata_export_mode: str = "csv",
         export_image_format: str = "original",
         primary_tag: str = "",
         category: str = "",
@@ -906,22 +956,21 @@ class DatabaseManager:
         reference_ids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         clean_theme = theme.strip()
-        clean_primary_tag = (primary_tag or "").strip() or clean_theme
+        raw_pt = (primary_tag or "").strip() or clean_theme
+        clean_primary_tag = format_picassy_keyword(raw_pt) or raw_pt
         clean_category = (category or "").strip()
         clean_filename_style = normalize_filename_style(filename_style, default="picassy_slug")
         clean_pref_slot = int(preferred_cdp_slot or 0)
         if clean_pref_slot < 0 or clean_pref_slot > MAX_CDP_SLOTS:
             clean_pref_slot = 0
 
-        slug = slugify_theme(clean_primary_tag or clean_theme)
+        slug = slugify_theme(raw_pt or clean_theme)
         ts_folder = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         root = Path(export_root_dir).expanduser() if export_root_dir else EXPORTS_DIR
         export_dir = root / f"{ts_folder}_{slug}"
         export_dir.mkdir(parents=True, exist_ok=True)
 
-        clean_mode = (metadata_export_mode or "json").strip().lower()
-        if clean_mode not in ("json", "caption", "none"):
-            clean_mode = "json"
+        clean_mode = normalize_metadata_export_mode(metadata_export_mode, default="csv")
         clean_image_format = normalize_export_image_format(export_image_format)
 
         now = now_iso()
@@ -1123,6 +1172,13 @@ class DatabaseManager:
         for key in allowed_scalar:
             if key in fields and fields[key] is not None:
                 updates[key] = fields[key]
+        if "metadata_export_mode" in updates:
+            updates["metadata_export_mode"] = normalize_metadata_export_mode(
+                updates["metadata_export_mode"], default="csv"
+            )
+        if "primary_tag" in updates:
+            raw_u_pt = str(updates["primary_tag"] or "").strip()
+            updates["primary_tag"] = format_picassy_keyword(raw_u_pt) or raw_u_pt
         if "export_image_format" in updates:
             updates["export_image_format"] = normalize_export_image_format(
                 updates["export_image_format"]

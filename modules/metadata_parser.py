@@ -9,7 +9,7 @@ import re
 import unicodedata
 from typing import Any, Dict, List, Optional
 
-from config import DEFAULT_CAPTION_PROMPT
+from config import DEFAULT_CAPTION_PROMPT, format_picassy_keyword
 
 
 def _slugify_plain(text: str, max_len: int = 42) -> str:
@@ -34,7 +34,7 @@ def build_metadata_prompt(
     available_categories: Optional[List[str]] = None,
     include_visual_context: bool = True,
 ) -> str:
-    keyword = (primary_tag or theme).strip()
+    keyword = format_picassy_keyword(primary_tag or theme) or (primary_tag or theme).strip()
     custom_instruction = (caption_prompt or DEFAULT_CAPTION_PROMPT).strip()
     context_note = f" Visual context: {prompt_final}." if (include_visual_context and prompt_final) else ""
     cat_line = ""
@@ -71,18 +71,19 @@ def build_picassy_repair_prompt(
     alt_text: str,
     issues: List[str],
 ) -> str:
+    clean_pt = format_picassy_keyword(primary_tag) or primary_tag.strip()
     return (
         f"Fix the metadata JSON below strictly in {metadata_language} while keeping natural human grammar and zero keyword stuffing.\n"
-        f'Exact required keyword: "{primary_tag}"\n'
+        f'Exact required keyword: "{clean_pt}"\n'
         f"Current draft:\n"
         f'- title ({len(title)} chars): "{title}"\n'
         f'- description ({len(description)} chars): "{description}"\n'
         f'- alt_text ({len(alt_text)} chars): "{alt_text}"\n'
         f"Issues to fix: {'; '.join(issues)}\n"
         "Rules:\n"
-        f'- title: <= 60 chars, MUST start with exact "{primary_tag}".\n'
-        f'- description: <= 160 chars, complete sentence containing exact "{primary_tag}", no hashtags.\n'
-        f'- alt_text: STRICTLY 100 to 125 characters inclusive, natural visual narrative containing exact "{primary_tag}", no hashtags.\n'
+        f'- title: <= 60 chars, MUST start with exact "{clean_pt}" (Title Case, no hyphens/underscores).\n'
+        f'- description: <= 160 chars, complete sentence containing exact "{clean_pt}", no hashtags.\n'
+        f'- alt_text: STRICTLY 100 to 125 characters inclusive, natural visual narrative containing exact "{clean_pt}", no hashtags.\n'
         "Reply ONLY with valid JSON containing keys title, description, alt_text."
     )
 
@@ -140,7 +141,7 @@ def validate_picassy_metadata(
     meta: Dict[str, Any],
     primary_tag: str,
 ) -> List[str]:
-    kw = (primary_tag or "").strip()
+    kw = format_picassy_keyword(primary_tag) or (primary_tag or "").strip()
     title = (meta.get("title") or "").strip()
     desc = (meta.get("description") or "").strip()
     alt = (meta.get("alt_text") or "").strip()
@@ -183,13 +184,21 @@ def fit_picassy_metadata(
     - description <= 160 chars, natural complete sentence(s) containing `primary_tag`
     - alt_text strictly 100..125 chars, truthful visual sentence containing `primary_tag`
     """
-    kw = (primary_tag or theme or "Artwork").strip()
+    raw_kw_source = (primary_tag or theme or "Artwork").strip()
+    kw = format_picassy_keyword(raw_kw_source) or "Artwork"
     lang_low = (metadata_language or "English").strip().lower()
     is_vi = lang_low in ("vietnamese", "tiếng việt", "vi")
     hints = visual_hints or {}
 
-    # 1. Title (<= 60 chars, MUST start with exact primary_tag)
-    raw_title = _strip_hashtags(str(raw_meta.get("title") or "")).strip(' "\'')
+    def _scrub_slug_variants(s: str) -> str:
+        out_s = s
+        for cand_raw in {raw_kw_source, (theme or "").strip()}:
+            if cand_raw and ("-" in cand_raw or "_" in cand_raw) and cand_raw.lower() != kw.lower():
+                out_s = re.sub(re.escape(cand_raw), kw, out_s, flags=re.IGNORECASE)
+        return out_s
+
+    # 1. Title (<= 60 chars, MUST start with exact Title-Cased `kw` without hyphens/underscores)
+    raw_title = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("title") or "")).strip(' "\''))
     raw_title = _ensure_keyword_casing(raw_title, kw)
     if not raw_title or not raw_title.lower().startswith(kw.lower()):
         tail = re.sub(re.escape(kw), "", raw_title, flags=re.IGNORECASE).strip(" :-–—|.,")
@@ -208,7 +217,7 @@ def fit_picassy_metadata(
             title = kw[:60]
 
     # 2. Description (<= 160 chars, natural sentence(s) containing exact primary_tag, zero hashtags)
-    raw_desc = _strip_hashtags(str(raw_meta.get("description") or "")).strip(' "\'')
+    raw_desc = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("description") or "")).strip(' "\''))
     raw_desc = _ensure_keyword_casing(raw_desc, kw)
     if not raw_desc:
         angle_h = hints.get("camera_angle") or ("góc nhìn tự nhiên" if is_vi else "balanced framing")
@@ -231,7 +240,7 @@ def fit_picassy_metadata(
         )
 
     # 3. Alt text (STRICTLY 100..125 chars, natural narrative describing real image, contains exact primary_tag)
-    raw_alt = _strip_hashtags(str(raw_meta.get("alt_text") or "")).strip(' "\'')
+    raw_alt = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("alt_text") or "")).strip(' "\''))
     raw_alt = _ensure_keyword_casing(raw_alt, kw)
     if not raw_alt:
         angle_h = hints.get("camera_angle") or ("góc nhìn cân đối" if is_vi else "clear balanced framing")

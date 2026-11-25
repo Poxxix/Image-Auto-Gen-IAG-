@@ -27,9 +27,11 @@ from config import (
     REFERENCES_DIR,
     STUDIO_PRESETS,
     ensure_directories,
+    format_picassy_keyword,
     normalize_cdp_slots,
     normalize_export_image_format,
     normalize_filename_style,
+    normalize_metadata_export_mode,
     normalize_picassy_categories,
 )
 from database.db_manager import db, slugify_theme
@@ -37,14 +39,12 @@ from modules.app_logging import logger
 from modules.export_manager import (
     build_job_zip_file,
     cleanup_and_resequence_after_delete_generation,
-    format_caption_text,
+    get_or_build_job_csv_bytes,
     open_export_folder_in_os,
     pick_folder_via_os_dialog,
     relocate_job_export_dir,
     sync_generation_and_manifest,
     sync_job_manifest,
-    write_caption_txt,
-    write_sidecar_json,
 )
 from modules.image_providers import (
     check_cdp_status,
@@ -125,7 +125,7 @@ class CreateJobRequest(BaseModel):
     cycle_references: bool = True
     aspect_ratio: str = "1:1"
     metadata_language: str = "English"
-    metadata_export_mode: str = "json"           # json | caption | none
+    metadata_export_mode: str = "csv"            # csv | none
     export_image_format: Optional[str] = None    # original | png | jpg | webp
     primary_tag: Optional[str] = None
     category: Optional[str] = None
@@ -181,6 +181,7 @@ class UpdateGenerationRequest(BaseModel):
     reference_id: Optional[int] = None
     clear_reference: bool = False
     is_locked: Optional[bool] = None
+    is_peak: Optional[bool] = None
     title: Optional[str] = None
     caption: Optional[str] = None
     description: Optional[str] = None
@@ -286,13 +287,39 @@ def get_providers() -> Dict[str, Any]:
     }
 
 
+def _ensure_cdp_slot_enabled(slot_id: int) -> bool:
+    """Enables `slot_id` inside persisted settings when operator launches or binds an online slot."""
+    sid = int(slot_id or 1)
+    settings = db.get_settings(include_secrets=False)
+    slots = normalize_cdp_slots(settings.get("cdp_slots"))
+    changed = False
+    for s in slots:
+        if int(s["slot_id"]) == sid and not s.get("enabled", False):
+            s["enabled"] = True
+            changed = True
+    if changed:
+        db.update_settings({"cdp_slots": slots})
+        runner.wake_workers()
+    return changed
+
+
 @app.post("/api/providers/cdp/launch")
 def api_launch_cdp(req: LaunchCDPRequest) -> Dict[str, Any]:
-    return launch_chrome_slot(
+    res = launch_chrome_slot(
         slot_id=req.slot_id,
         engine=req.engine,
         force_restart=req.force_restart,
     )
+    st = res.get("status") or {}
+    if res.get("launched") or st.get("connected"):
+        was_auto_enabled = _ensure_cdp_slot_enabled(req.slot_id)
+        if was_auto_enabled:
+            res["auto_enabled"] = True
+            res["message"] = f"{res.get('message', '')} Worker enabled for Slot #{req.slot_id}.".strip()
+        if isinstance(res.get("status"), dict):
+            res["status"]["enabled"] = True
+        runner.wake_workers()
+    return res
 
 
 @app.post("/api/axes/suggest")
@@ -536,9 +563,12 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     except ValueError as verr:
         raise HTTPException(status_code=400, detail=str(verr))
 
-    export_mode = (req.metadata_export_mode or "json").strip().lower()
-    if export_mode not in ("json", "caption", "none"):
-        export_mode = "json"
+    try:
+        export_mode = normalize_metadata_export_mode(
+            req.metadata_export_mode, default="csv", strict=False
+        )
+    except ValueError as verr:
+        raise HTTPException(status_code=400, detail=str(verr))
 
     settings_snapshot = db.get_settings(include_secrets=False)
     default_fmt = settings_snapshot.get("export_image_format") or "original"
@@ -561,7 +591,8 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     except ValueError as verr:
         raise HTTPException(status_code=400, detail=str(verr))
 
-    clean_primary_tag = (req.primary_tag or "").strip() or req.theme.strip()
+    raw_pt = (req.primary_tag or "").strip() or req.theme.strip()
+    clean_primary_tag = format_picassy_keyword(raw_pt) or raw_pt
     allowed_cats = normalize_picassy_categories(
         settings_snapshot.get("picassy_categories") or DEFAULT_PICASSY_CATEGORIES
     )
@@ -612,6 +643,15 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         job_id=job["id"],
     )
 
+    if req.preferred_cdp_slot > 0:
+        slot_statuses = list_cdp_slots_status(
+            slots=normalize_cdp_slots(settings_snapshot.get("cdp_slots")),
+            force=False,
+        )
+        target_st = next((s for s in slot_statuses if int(s["slot_id"]) == int(req.preferred_cdp_slot)), None)
+        if target_st and target_st.get("connected") and not target_st.get("enabled"):
+            _ensure_cdp_slot_enabled(req.preferred_cdp_slot)
+
     if req.auto_start:
         job = runner.enqueue_job(job["id"]) or db.get_job(job["id"])  # type: ignore
     else:
@@ -639,12 +679,13 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
             updates["slug"] = slugify_theme(clean_t)
 
     if "primary_tag" in updates:
-        clean_pt = str(updates["primary_tag"]).strip()
-        if not clean_pt:
+        raw_pt_up = str(updates["primary_tag"]).strip()
+        if not raw_pt_up:
             raise HTTPException(status_code=400, detail="Primary tag cannot be empty.")
+        clean_pt = format_picassy_keyword(raw_pt_up) or raw_pt_up
         updates["primary_tag"] = clean_pt
         if not has_saved_images:
-            updates["slug"] = slugify_theme(clean_pt)
+            updates["slug"] = slugify_theme(raw_pt_up)
 
     if "category" in updates:
         clean_cat = str(updates["category"]).strip()
@@ -676,12 +717,19 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         if slot_num < 0 or slot_num > MAX_CDP_SLOTS:
             raise HTTPException(status_code=400, detail=f"preferred_cdp_slot must be 0..{MAX_CDP_SLOTS}.")
         updates["preferred_cdp_slot"] = slot_num
+        if slot_num > 0:
+            slot_statuses = list_cdp_slots_status(force=False)
+            target_st = next((s for s in slot_statuses if int(s["slot_id"]) == slot_num), None)
+            if target_st and target_st.get("connected") and not target_st.get("enabled"):
+                _ensure_cdp_slot_enabled(slot_num)
 
     if "metadata_export_mode" in updates:
-        mode = str(updates["metadata_export_mode"]).strip().lower()
-        if mode not in ("json", "caption", "none"):
-            raise HTTPException(status_code=400, detail="Invalid metadata_export_mode.")
-        updates["metadata_export_mode"] = mode
+        try:
+            updates["metadata_export_mode"] = normalize_metadata_export_mode(
+                updates["metadata_export_mode"], strict=True
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
 
     if "export_image_format" in updates:
         try:
@@ -748,13 +796,13 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
                 )
         updated = db.get_job(job_id) or updated
 
-    # If the user switched to 'json' or 'caption' mode and any completed images lack metadata,
-    # automatically synthesize Pinterest captions & descriptions for them before syncing disk files!
-    if updated.get("metadata_export_mode") in ("json", "caption"):
+    # If the user switched to 'csv' mode and any completed images lack metadata,
+    # automatically synthesize Picassy Title, Description & Alt Text before syncing `pin-import.csv`.
+    if updated.get("metadata_export_mode") == "csv":
         needs_refresh = False
         for gen in updated.get("generations") or []:
             if gen.get("image_file") or gen.get("image_path"):
-                if not gen.get("title") or not gen.get("description") or not gen.get("caption"):
+                if not gen.get("title") or not gen.get("description") or not gen.get("alt_text"):
                     try:
                         meta = write_generation_metadata(
                             job=updated,
@@ -766,7 +814,8 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
                             title=meta["title"],
                             caption=meta.get("caption") or meta["title"],
                             description=meta["description"],
-                            hashtags=meta.get("hashtags") or "",
+                            alt_text=meta.get("alt_text") or "",
+                            hashtags="",
                         )
                         needs_refresh = True
                     except Exception:
@@ -981,6 +1030,8 @@ def api_update_generation(gen_id: int, req: UpdateGenerationRequest) -> Dict[str
 
     if req.is_locked is not None:
         updates["is_locked"] = req.is_locked
+    if req.is_peak is not None:
+        updates["is_peak"] = req.is_peak
     if req.title is not None:
         updates["title"] = req.title.strip()
     if req.caption is not None:
@@ -1030,7 +1081,7 @@ def api_update_generation(gen_id: int, req: UpdateGenerationRequest) -> Dict[str
         updates["error"] = ""
 
     updated_gen = db.update_generation(gen_id, **updates)
-    sync_generation_and_manifest(job["id"], gen_id)
+    sync_generation_and_manifest(job["id"], gen_id, force_manifest=True)
     return {
         "generation": updated_gen,
         "job": db.get_job(job["id"]),
@@ -1110,83 +1161,16 @@ def api_get_generation_image(
     )
 
 
-@app.get("/api/generations/{gen_id}/sidecar")
-def api_get_generation_sidecar(gen_id: int):
-    gen = db.get_generation(gen_id)
-    if not gen:
-        raise HTTPException(status_code=404, detail="Generation not found.")
-    job = db.get_job(gen["job_id"])
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    sidecar_path = write_sidecar_json(job, gen)
-    if not sidecar_path.exists():
-        raise HTTPException(status_code=404, detail="Sidecar JSON not found.")
-    return FileResponse(
-        str(sidecar_path),
-        media_type="application/json",
-        filename=sidecar_path.name,
-    )
-
-
-@app.get("/api/generations/{gen_id}/caption-file")
-def api_get_generation_caption_file(gen_id: int):
-    gen = db.get_generation(gen_id)
-    if not gen:
-        raise HTTPException(status_code=404, detail="Generation not found.")
-    job = db.get_job(gen["job_id"])
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if (job.get("metadata_export_mode") or "json") == "caption":
-        cap_path = write_caption_txt(job, gen)
-        return FileResponse(
-            str(cap_path),
-            media_type="text/plain; charset=utf-8",
-            filename=cap_path.name,
-        )
-    text_body = format_caption_text(job, gen)
-    filename = gen.get("caption_file") or f"{int(gen['index_num']):03d}_{job['slug']}.txt"
-    return PlainTextResponse(
-        content=text_body,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@app.get("/api/jobs/{job_id}/manifest")
-def api_get_job_manifest(job_id: int):
-    job = db.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    manifest_path = Path(job["export_dir"]) / "manifest.json"
-    if not manifest_path.exists():
-        # Temporarily write manifest if requested explicitly
-        sync_job_manifest(job_id, job={**job, "metadata_export_mode": "json"})
-    if not manifest_path.exists():
-        raise HTTPException(status_code=404, detail="Manifest not found.")
-    return FileResponse(
-        str(manifest_path),
-        media_type="application/json",
-        filename="manifest.json",
-    )
-
-
-@app.get("/api/jobs/{job_id}/captions-bundle")
-def api_get_job_captions_bundle(job_id: int):
-    job = db.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    blocks = [
-        f"============================================================",
-        f"PINTEREST & SOCIAL CAPTIONS · {job['theme'].upper()}",
-        f"Set #{job['id']} · Language: {job.get('metadata_language') or 'English'}",
-        f"============================================================\n",
-    ]
-    for gen in job.get("generations") or []:
-        if gen.get("image_file") or gen.get("title") or gen.get("description"):
-            blocks.append(format_caption_text(job, gen))
-    content = "\n".join(blocks)
-    return PlainTextResponse(
-        content=content,
-        headers={"Content-Disposition": f'attachment; filename="captions_{job["slug"]}.txt"'},
+@app.get("/api/jobs/{job_id}/csv")
+def api_download_job_csv(job_id: int):
+    try:
+        csv_bytes, csv_filename = get_or_build_job_csv_bytes(job_id)
+    except ValueError as verr:
+        raise HTTPException(status_code=404, detail=str(verr))
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{csv_filename}"'},
     )
 
 
@@ -1257,6 +1241,15 @@ def api_get_settings() -> Dict[str, Any]:
 
 @app.put("/api/settings")
 def api_update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
+    if "default_metadata_export_mode" in updates:
+        try:
+            updates["default_metadata_export_mode"] = normalize_metadata_export_mode(
+                updates["default_metadata_export_mode"],
+                strict=True,
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
+
     if "export_image_format" in updates:
         try:
             updates["export_image_format"] = normalize_export_image_format(
