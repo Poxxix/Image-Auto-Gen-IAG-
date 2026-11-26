@@ -272,6 +272,8 @@ def run_cdp_image_turn_isolated(
     metadata_request: Optional[Dict[str, Any]] = None,
     cdp_port: Optional[int] = None,
     slot_id: int = 1,
+    reference_strength: str = "balanced",
+    soft_similarity_accept: bool = False,
 ) -> Dict[str, Any]:
     tmp = tempfile.NamedTemporaryFile(prefix="_studio_cdp_", suffix=".bin", delete=False)
     bytes_path = tmp.name
@@ -287,6 +289,8 @@ def run_cdp_image_turn_isolated(
                 "max_wait_sec": max_wait_sec,
                 "new_chat": new_chat,
                 "check_ref_similarity": check_ref_similarity,
+                "reference_strength": reference_strength,
+                "soft_similarity_accept": soft_similarity_accept,
                 "recycle_tab": recycle_tab,
                 "metadata_request": metadata_request,
                 "cdp_port": cdp_port,
@@ -370,8 +374,12 @@ def _worker_entrypoint() -> None:
                 metadata_request=payload.get("metadata_request"),
                 cdp_port=payload.get("cdp_port"),
                 slot_id=int(payload.get("slot_id") or 1),
+                reference_strength=str(payload.get("reference_strength") or "balanced"),
+                soft_similarity_accept=bool(payload.get("soft_similarity_accept", False)),
             )
             raw_bytes = result.pop("raw_bytes")
+            result.pop("core_luma20", None)
+            result.pop("edge_vec", None)
             Path(payload["bytes_out_path"]).write_bytes(raw_bytes)
             _emit("done", info=result)
             return

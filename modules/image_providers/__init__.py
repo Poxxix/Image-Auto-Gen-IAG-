@@ -79,6 +79,8 @@ def generate_image_for_turn(
     metadata_request: Optional[Dict[str, Any]] = None,
     cdp_port: Optional[int] = None,
     slot_id: int = 1,
+    reference_strength: str = "balanced",
+    soft_similarity_accept: bool = False,
 ) -> Dict[str, Any]:
     """Dispatches a single turn's image generation to the selected provider adapter."""
     from database.db_manager import db
@@ -113,6 +115,8 @@ def generate_image_for_turn(
             metadata_request=metadata_request,
             cdp_port=cdp_port,
             slot_id=slot_id,
+            reference_strength=reference_strength,
+            soft_similarity_accept=soft_similarity_accept,
         )
     elif engine == "gemini_api":
         result = generate_image_via_gemini_api(
@@ -139,12 +143,15 @@ def generate_image_for_turn(
                 result["raw_bytes"], log_fn=log_fn
             )
             if wm_res.get("applied") and wm_res.get("raw_bytes"):
+                prev_sim_warn = result.get("reference_similarity_warning")
                 cleaned_info = inspect_image_bytes(wm_res["raw_bytes"])
                 cleaned_info["raw_bytes"] = wm_res["raw_bytes"]
                 cleaned_info["watermark_removed"] = True
                 cleaned_info["watermark_meta"] = wm_res.get("meta") or {}
                 if result.get("inline_meta"):
                     cleaned_info["inline_meta"] = result["inline_meta"]
+                if prev_sim_warn:
+                    cleaned_info["reference_similarity_warning"] = prev_sim_warn
                 result = cleaned_info
 
     # Verify similarity against reference input for non-CDP providers too (CDP already enforces before accept)
@@ -153,12 +160,21 @@ def generate_image_for_turn(
         ref_file = Path(reference_path)
         if ref_file.exists():
             ref_info = inspect_image_bytes(ref_file.read_bytes())
-            sim = measure_image_similarity(result, ref_info)
+            sim = measure_image_similarity(
+                result,
+                ref_info,
+                reference_strength=reference_strength,
+            )
             if sim["too_similar"]:
-                raise ReferenceTooSimilarError(
-                    f"Generated image too closely matches input reference ({sim['reason']}).",
-                    similarity=sim,
-                )
+                if soft_similarity_accept and not sim.get("is_verbatim_echo", False):
+                    result["reference_similarity_warning"] = (
+                        f"Close to input reference ({sim['reason']}) — kept on retry"
+                    )
+                else:
+                    raise ReferenceTooSimilarError(
+                        f"Generated image too closely matches input reference ({sim['reason']}).",
+                        similarity=sim,
+                    )
 
     return result
 

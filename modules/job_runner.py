@@ -658,10 +658,14 @@ class JobRunner:
 
         with self._lock:
             drop_ref_now = gen_id in self._drop_ref_generations
+            prev_sim_fails = self._sim_failures.get(gen_id, 0)
             recycle_interval = max(5, int(settings.get("cdp_recycle_tab_interval") or 20))
             turns_since = self._slot_turns_since_recycle.get(slot_id, 0)
             recycle_next = self._slot_recycle_next.get(slot_id, False)
             should_recycle_tab = recycle_next or (turns_since >= recycle_interval)
+
+        ref_strength = str(job.get("reference_strength") or "balanced")
+        soft_sim_accept = prev_sim_fails >= 1
 
         active_prompt = gen["prompt_final"]
         active_ref_path = None if drop_ref_now else ref_path
@@ -725,6 +729,8 @@ class JobRunner:
                 metadata_request=metadata_req,
                 cdp_port=cdp_port,
                 slot_id=slot_id,
+                reference_strength=ref_strength,
+                soft_similarity_accept=soft_sim_accept,
             )
             with self._lock:
                 self._slot_turns_since_recycle[slot_id] = (
@@ -895,6 +901,17 @@ class JobRunner:
             dhash=saved_file["dhash"],
             threshold=dhash_thresh,
         )
+        soft_ref_warn = str((img_result or {}).get("reference_similarity_warning") or "")
+        if soft_ref_warn:
+            db.log_activity(
+                f"Turn #{idx}: {soft_ref_warn}",
+                level="INFO",
+                stage="DIVERSITY",
+                job_id=job_id,
+                generation_id=gen_id,
+            )
+            if not dup_warn:
+                dup_warn = soft_ref_warn
 
         export_mode = normalize_metadata_export_mode(
             job.get("metadata_export_mode"), default="csv"

@@ -1118,8 +1118,9 @@ def _inspect_generation_dom(page: Any) -> Dict[str, Any]:
                     if (errorBanner) break;
                 }
 
-                // Scan assistant images across document & classify loading/broken images in lastTurn
-                const forbiddenAncestor = 'user-query, .user-query-container, [data-message-author-role="user"], rich-textarea, uploader, uploader-file-preview, header, nav';
+                // Scan assistant images only (never collect user query attachments, composer previews, or dialogs)
+                const forbiddenAncestor = 'user-query, user-query-content, user-query-file-preview, .user-query-container, .query-content, .file-preview, .attachment-preview, [data-message-author-role="user"], rich-textarea, uploader, uploader-file-preview, mat-dialog-container, [role="dialog"], header, nav, aside';
+                const assistantWidgetSelector = 'generated-image, single-image, model-response, [data-message-author-role="assistant"], .response-container';
                 const rawImgs = Array.from(document.querySelectorAll('img'));
                 const images = [];
                 let loadingImagesCount = 0;
@@ -1127,6 +1128,9 @@ def _inspect_generation_dom(page: Any) -> Dict[str, Any]:
 
                 for (const img of rawImgs) {
                     if (img.closest(forbiddenAncestor)) continue;
+                    const inGeneratedWidget = Boolean(img.closest(assistantWidgetSelector));
+                    const inAssistantTurn = turns.length > 0 ? turns.some((t) => t.contains(img)) : inGeneratedWidget;
+                    if (!inAssistantTurn && !inGeneratedWidget) continue;
                     const src = img.currentSrc || img.src || '';
                     if (!src) continue;
                     const lower = src.toLowerCase();
@@ -1212,6 +1216,8 @@ def _validate_candidate_bytes(
     ref_dhash: Optional[str] = None,
     ref_info: Optional[Dict[str, Any]] = None,
     check_ref_similarity: bool = True,
+    reference_strength: str = "balanced",
+    soft_similarity_accept: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if not raw_bytes or len(raw_bytes) < 4096:
         return None
@@ -1223,19 +1229,37 @@ def _validate_candidate_bytes(
             return None
         if check_ref_similarity:
             if ref_info:
-                sim = measure_image_similarity(info, ref_info)
+                sim = measure_image_similarity(
+                    info,
+                    ref_info,
+                    reference_strength=reference_strength,
+                )
                 if sim["too_similar"]:
-                    raise ReferenceTooSimilarError(
-                        f"Generated image is too similar to input reference ({sim['reason']}).",
-                        similarity=sim,
-                    )
+                    if soft_similarity_accept and not sim.get("is_verbatim_echo", False):
+                        info["reference_similarity_warning"] = (
+                            f"Close to input reference ({sim['reason']}) — kept on retry"
+                        )
+                    else:
+                        raise ReferenceTooSimilarError(
+                            f"Generated image is too similar to input reference ({sim['reason']}).",
+                            similarity=sim,
+                        )
             elif ref_dhash:
                 dist = dhash_distance(info["dhash"], ref_dhash)
-                if dist <= 10:
-                    raise ReferenceTooSimilarError(
-                        f"Generated image is too similar to input reference (dHash={dist}).",
-                        similarity={"dhash_dist": dist, "too_similar": True},
-                    )
+                if dist <= 4:
+                    if soft_similarity_accept and dist > 1:
+                        info["reference_similarity_warning"] = (
+                            f"Close to input reference (dHash={dist}) — kept on retry"
+                        )
+                    else:
+                        raise ReferenceTooSimilarError(
+                            f"Generated image is too similar to input reference (dHash={dist}).",
+                            similarity={
+                                "dhash_dist": dist,
+                                "is_verbatim_echo": dist <= 1,
+                                "too_similar": True,
+                            },
+                        )
         info["raw_bytes"] = raw_bytes
         return info
     except ReferenceTooSimilarError:
@@ -1371,6 +1395,8 @@ def _extract_raw_bytes_via_cdp(
     ref_info: Optional[Dict[str, Any]] = None,
     check_ref_similarity: bool = True,
     response_objects: Optional[Dict[str, Any]] = None,
+    reference_strength: str = "balanced",
+    soft_similarity_accept: bool = False,
 ) -> Optional[Dict[str, Any]]:
     def _check(raw_data: bytes) -> Optional[Dict[str, Any]]:
         return _validate_candidate_bytes(
@@ -1378,6 +1404,8 @@ def _extract_raw_bytes_via_cdp(
             ref_dhash=ref_dhash,
             ref_info=ref_info,
             check_ref_similarity=check_ref_similarity,
+            reference_strength=reference_strength,
+            soft_similarity_accept=soft_similarity_accept,
         )
 
     page_referer = "https://gemini.google.com/"
@@ -1945,6 +1973,8 @@ def generate_image_via_cdp(
     metadata_request: Optional[Dict[str, Any]] = None,
     cdp_port: Optional[int] = None,
     slot_id: int = 1,
+    reference_strength: str = "balanced",
+    soft_similarity_accept: bool = False,
 ) -> Dict[str, Any]:
     """
     Generates 1 image via Chrome CDP on the slot's `cdp_port` (`:9222..:9225`),
@@ -2115,19 +2145,42 @@ def generate_image_via_cdp(
                     stable_ticks = 0
 
                 if new_imgs and stable_ticks >= 2:
+                    last_sim_err: Optional[ReferenceTooSimilarError] = None
+                    ignored_echo = False
                     for cand in reversed(new_imgs):
                         cand_src = cand.get("src") or ""
-                        extracted = _extract_raw_bytes_via_cdp(
-                            context=context,
-                            page=page,
-                            src=cand_src,
-                            ref_dhash=ref_dhash,
-                            response_cache=tracker.response_cache,
-                            response_objects=tracker.response_objects,
-                            log_fn=_log,
-                            ref_info=ref_info,
-                            check_ref_similarity=check_ref_similarity,
-                        )
+                        try:
+                            extracted = _extract_raw_bytes_via_cdp(
+                                context=context,
+                                page=page,
+                                src=cand_src,
+                                ref_dhash=ref_dhash,
+                                response_cache=tracker.response_cache,
+                                response_objects=tracker.response_objects,
+                                log_fn=_log,
+                                ref_info=ref_info,
+                                check_ref_similarity=check_ref_similarity,
+                                reference_strength=reference_strength,
+                                soft_similarity_accept=soft_similarity_accept,
+                            )
+                        except ReferenceTooSimilarError as sim_exc:
+                            known_srcs.add(cand_src)
+                            still_busy = (
+                                streaming
+                                or int(state.get("loadingImagesCount") or 0) > 0
+                                or net["active_gen_streams"] > 0
+                                or net["active_img_requests"] > 0
+                                or elapsed < 18
+                            )
+                            if sim_exc.similarity.get("is_verbatim_echo") and (
+                                still_busy or len(new_imgs) > 1
+                            ):
+                                ignored_echo = True
+                                _log("Ignored echoed reference preview in DOM; waiting for generated output...")
+                                continue
+                            last_sim_err = sim_exc
+                            continue
+
                         if extracted:
                             if metadata_request and not (should_abort and should_abort()):
                                 idx_num = int(metadata_request.get("index_num") or 1)
@@ -2149,6 +2202,9 @@ def generate_image_via_cdp(
                                     extracted["inline_meta"] = inline_meta
                             return extracted
                         known_srcs.add(cand_src)
+
+                    if last_sim_err is not None and not ignored_echo:
+                        raise last_sim_err
 
                 send_confirmed_now = (
                     int(state.get("userCount") or 0) > prev_user_count
