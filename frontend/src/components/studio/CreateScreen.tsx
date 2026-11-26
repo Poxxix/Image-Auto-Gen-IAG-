@@ -32,6 +32,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import {
   EXPORT_IMAGE_FORMAT_OPTIONS,
+  REFERENCE_ADAPTIVE_PRESET_ID,
+  REFERENCE_SAFE_AXES_DEFAULTS,
   REFERENCE_STRENGTH_OPTIONS,
   formatPicassyKeyword,
   getReferenceImageUrl,
@@ -265,6 +267,11 @@ export function CreateScreen({
   const [selectedPresetId, setSelectedPresetId] = React.useState<string>(
     presets[0]?.id || "auto_universal"
   )
+  // When using Reference images, Preset is OFF by default so mixed inputs (paper vs skin) aren't forced into 3D photography presets
+  const [usePresetInRef, setUsePresetInRef] = React.useState<boolean>(false)
+  const [lastManualPresetId, setLastManualPresetId] = React.useState<string>(
+    presets[0]?.id || "auto_universal"
+  )
   const [fixedElements, setFixedElements] = React.useState<FixedElements>({
     subject: "",
     style: presets[0]?.fixed_elements?.style || "",
@@ -328,8 +335,47 @@ export function CreateScreen({
       "webp",
     ]
 
+  const applyReferenceAdaptiveDefaults = React.useCallback(() => {
+    setSelectedPresetId(REFERENCE_ADAPTIVE_PRESET_ID)
+    setAiSuggestSource(null)
+    setSuggestError(null)
+    setFixedElements({
+      subject: "",
+      style: "",
+      color_palette: "",
+      brand_mood: "",
+    })
+    setEnabledFixed({
+      subject: false,
+      style: false,
+      color_palette: false,
+      brand_mood: false,
+    })
+    setAxesText({
+      camera_angles: REFERENCE_SAFE_AXES_DEFAULTS.camera_angles.join("\n"),
+      lighting: REFERENCE_SAFE_AXES_DEFAULTS.lighting.join("\n"),
+      compositions: REFERENCE_SAFE_AXES_DEFAULTS.compositions.join("\n"),
+      atmospheres: REFERENCE_SAFE_AXES_DEFAULTS.atmospheres.join("\n"),
+      custom_axis: REFERENCE_SAFE_AXES_DEFAULTS.custom_axis.join("\n"),
+    })
+    setCustomAxisLabel(REFERENCE_SAFE_AXES_DEFAULTS.custom_axis_label)
+    setEnabledAxes({
+      camera_angles: false,
+      compositions: true,
+      lighting: true,
+      atmospheres: false,
+      custom_axis: true,
+    })
+  }, [])
+
   const handleApplyPreset = (presetId: string) => {
     setSelectedPresetId(presetId)
+    if (presetId !== REFERENCE_ADAPTIVE_PRESET_ID && presetId !== "ai_custom") {
+      setLastManualPresetId(presetId)
+    }
+    if (referenceMode !== "prompt_only" && presetId !== REFERENCE_ADAPTIVE_PRESET_ID) {
+      setUsePresetInRef(true)
+    }
     setAiSuggestSource(null)
     setSuggestError(null)
     const found = presets.find((p) => p.id === presetId)
@@ -366,11 +412,34 @@ export function CreateScreen({
     }
   }
 
+  const handleSwitchReferenceMode = (nextMode: ReferenceMode) => {
+    setReferenceMode(nextMode)
+    if (nextMode !== "prompt_only") {
+      if (!usePresetInRef) {
+        applyReferenceAdaptiveDefaults()
+      }
+    } else if (selectedPresetId === REFERENCE_ADAPTIVE_PRESET_ID) {
+      handleApplyPreset(lastManualPresetId || presets[0]?.id || "auto_universal")
+    }
+  }
+
+  const handleTogglePresetInRef = (checked: boolean) => {
+    setUsePresetInRef(checked)
+    if (checked) {
+      handleApplyPreset(lastManualPresetId || presets[0]?.id || "auto_universal")
+    } else {
+      applyReferenceAdaptiveDefaults()
+    }
+  }
+
   const applyAxesSuggestionResult = (
     res: SuggestAxesResponse,
     applyMetaFields = false
   ) => {
     setSelectedPresetId("ai_custom")
+    if (referenceMode !== "prompt_only") {
+      setUsePresetInRef(true)
+    }
     setAiSuggestSource(res.source_label)
     if (applyMetaFields) {
       if (res.theme) {
@@ -579,8 +648,13 @@ export function CreateScreen({
   const parsedAtmos = splitLines(axesText.atmospheres)
   const parsedCustom = splitLines(axesText.custom_axis)
 
-  const activePresetLabel =
-    selectedPresetId === "ai_custom"
+  const isRefPresetOff =
+    referenceMode !== "prompt_only" &&
+    (!usePresetInRef || selectedPresetId === REFERENCE_ADAPTIVE_PRESET_ID)
+
+  const activePresetLabel = isRefPresetOff
+    ? "Off (Adaptive per reference)"
+    : selectedPresetId === "ai_custom"
       ? "AI custom"
       : presets.find((p) => p.id === selectedPresetId)?.label || "Preset"
 
@@ -791,7 +865,7 @@ export function CreateScreen({
                         <button
                           key={mode.id}
                           type="button"
-                          onClick={() => setReferenceMode(mode.id)}
+                          onClick={() => handleSwitchReferenceMode(mode.id)}
                           className={cn(
                             "flex items-start gap-2.5 rounded-md border p-3 text-left transition-colors duration-150 cursor-pointer",
                             active
@@ -1156,6 +1230,15 @@ export function CreateScreen({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {referenceMode !== "prompt_only" && (
+                      <label className="mr-1 inline-flex h-8 items-center gap-2 rounded-md border border-[#2E2E2E] bg-[#171717] px-2.5 text-xs text-[#F5F5F5] cursor-pointer">
+                        <span>Use preset</span>
+                        <Switch
+                          checked={usePresetInRef}
+                          onCheckedChange={handleTogglePresetInRef}
+                        />
+                      </label>
+                    )}
                     <button
                       type="button"
                       onClick={() => setShowImportDialog(true)}
@@ -1205,9 +1288,20 @@ export function CreateScreen({
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {isRefPresetOff && (
+                  <p className="text-[11px] leading-relaxed text-[#A3A3A3]">
+                    Preset đang <strong className="text-[#F5F5F5]">Tắt (mặc định cho ảnh mẫu)</strong>: tự động giữ nguyên kiểu trình bày của từng tấm ảnh gốc (giấy ra giấy, trên da ra trên da) và chỉ biến đổi thiết kế họa tiết bên trong. Bật công tắc <strong className="text-[#F5F5F5]">Use preset</strong> hoặc bấm vào một ô dưới đây nếu bạn cố ý muốn ép chung một phong cách camera/phông nền cho cả bộ.
+                  </p>
+                )}
+
+                <div
+                  className={cn(
+                    "grid grid-cols-2 gap-2 sm:grid-cols-4 transition-opacity duration-150",
+                    isRefPresetOff && "opacity-50 hover:opacity-90"
+                  )}
+                >
                   {presets.map((p) => {
-                    const isSelected = selectedPresetId === p.id
+                    const isSelected = !isRefPresetOff && selectedPresetId === p.id
                     return (
                       <button
                         key={p.id}
@@ -1232,7 +1326,9 @@ export function CreateScreen({
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[#2E2E2E] bg-[#171717] px-3 py-2 text-xs">
                   <div className="min-w-0 flex-1 truncate text-[#A3A3A3]">
                     <span className="font-medium text-[#F5F5F5]">Style lock: </span>
-                    {fixedElements.style || "Adaptive high-resolution visual style"}
+                    {isRefPresetOff
+                      ? "Adaptive per reference image (carrier-locked: paper stays paper, skin stays skin)"
+                      : fixedElements.style || "Adaptive high-resolution visual style"}
                   </div>
                   <button
                     type="button"

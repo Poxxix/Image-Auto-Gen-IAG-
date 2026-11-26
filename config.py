@@ -1101,11 +1101,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "optimize_prompt_english": True,
     "remove_watermark": True,
     "fresh_chat_per_turn": True,
-    "max_turn_retries": 1,
+    "max_turn_retries": 2,
     "cdp_turn_watchdog_sec": 30,
     "cdp_recycle_tab_interval": 20,
     "reference_similarity_check": True,
-    "drop_ref_on_similarity_retry": True,
+    "drop_ref_on_similarity_retry": False,
     "export_root_dir": str(EXPORTS_DIR),
     "export_image_format": "original",   # original | png | jpg | webp
     "max_concurrency": 4,

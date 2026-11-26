@@ -61,6 +61,38 @@ DEFAULT_ATMOSPHERES = [
     "Serene atmospheric sanctuary with soft ambient reflections",
 ]
 
+# Carrier-Safe Motif & Internal Layout Axes (used when Preset is OFF in Reference Mode: `preset_id == 'reference_adaptive'`)
+REFERENCE_SAFE_COMPOSITIONS = [
+    "Re-arranged primary motif silhouette with balanced asymmetrical flow",
+    "Fresh central focal structure with clean breathing margins",
+    "Redesigned secondary ornament placement and organic visual rhythm",
+    "Shifted focal weight with varied element scale and spacing",
+    "Diagonal motif movement with fresh contour and negative-space balance",
+    "Restructured motif proportions and refined internal detail hierarchy",
+    "Alternating compact and open detail clusters within original framing",
+    "Fresh geometric and organic curve variation across the core design",
+]
+
+REFERENCE_SAFE_TONAL_LIGHTING = [
+    "Consistent illumination and shading fidelity matching the reference surface",
+    "Refined tonal contrast between crisp linework and soft midtone gradients",
+    "Subtle highlight and shadow balance faithful to the reference medium",
+    "Clean micro-detail clarity with natural, unforced tonal roll-off",
+    "Delicate stipple, wash, or smooth shading depth matching the reference",
+    "Crisp edge definition paired with soft transitional shading",
+]
+
+REFERENCE_SAFE_MOTIF_VARIATIONS = [
+    "Invent new primary shape contours, element count, and fine ornament details",
+    "Replace the exact reference pattern with a fresh sibling design in the same craft",
+    "Vary line weight, curvature, and decorative accents while keeping the same medium",
+    "Create a distinct companion motif with new symmetry and focal sub-elements",
+    "Redraw the core subject with fresh proportions, posture, and detail placement",
+    "Introduce new structural branching and secondary micro-motifs in the same style",
+]
+
+REFERENCE_ADAPTIVE_PRESET_ID = "reference_adaptive"
+
 
 DEFAULT_ENABLED_AXES: Dict[str, bool] = {
     "camera_angles": True,
@@ -136,9 +168,85 @@ def resolve_axes_and_fixed(
     preset_id: str = "",
     fixed_elements: Optional[Dict[str, Any]] = None,
     variation_axes: Optional[Dict[str, Any]] = None,
+    reference_mode: str = "prompt_only",
 ) -> TupleAxesFixed:
-    preset = next((p for p in STUDIO_PRESETS if p["id"] == preset_id), None)
-    base_fixed: Dict[str, Any] = dict(preset["fixed_elements"]) if preset else {
+    norm_preset_id = (preset_id or "").strip()
+    is_ref_adaptive = norm_preset_id == REFERENCE_ADAPTIVE_PRESET_ID or (
+        not norm_preset_id and (reference_mode or "prompt_only") != "prompt_only"
+    )
+
+    if is_ref_adaptive:
+        base_fixed: Dict[str, Any] = {
+            "subject": "",
+            "style": "",
+            "color_palette": "",
+            "brand_mood": "",
+            "enabled_fixed": {
+                "subject": False,
+                "style": False,
+                "color_palette": False,
+                "brand_mood": False,
+            },
+        }
+        if isinstance(fixed_elements, dict):
+            raw_ef = fixed_elements.get("enabled_fixed")
+            for k in ("subject", "style", "color_palette", "brand_mood"):
+                val = str(fixed_elements.get(k) or "").strip()
+                if val:
+                    base_fixed[k] = val
+                    if isinstance(raw_ef, dict) and k in raw_ef:
+                        base_fixed["enabled_fixed"][k] = bool(raw_ef[k])
+                    else:
+                        base_fixed["enabled_fixed"][k] = True
+                elif isinstance(raw_ef, dict) and k in raw_ef:
+                    base_fixed["enabled_fixed"][k] = bool(raw_ef[k])
+
+        raw_axes = variation_axes or {}
+        adaptive_default_enabled: Dict[str, bool] = {
+            "camera_angles": False,
+            "compositions": True,
+            "lighting": True,
+            "atmospheres": False,
+            "custom_axis": True,
+        }
+        enabled_axes = normalize_enabled_axes(
+            raw_enabled=raw_axes.get("enabled_axes"),
+            preset_enabled=adaptive_default_enabled,
+            has_custom_pool=True,
+        )
+        custom_pool = _clean_list(
+            raw_axes.get("custom_axis"),
+            REFERENCE_SAFE_MOTIF_VARIATIONS,
+        )
+        custom_label = (
+            str(raw_axes.get("custom_axis_label") or "").strip()
+            or "Motif redesign"
+        )
+        resolved_axes: Dict[str, Any] = {
+            "camera_angles": _clean_list(
+                raw_axes.get("camera_angles"),
+                ["Maintain the exact viewing angle and framing scale of the reference image"],
+            ),
+            "lighting": _clean_list(
+                raw_axes.get("lighting"),
+                REFERENCE_SAFE_TONAL_LIGHTING,
+            ),
+            "compositions": _clean_list(
+                raw_axes.get("compositions"),
+                REFERENCE_SAFE_COMPOSITIONS,
+            ),
+            "atmospheres": _clean_list(
+                raw_axes.get("atmospheres"),
+                ["Preserve the exact surface medium and background carrier of the reference image"],
+            ),
+            "custom_axis": custom_pool,
+            "custom_axis_label": custom_label,
+            "enabled_axes": enabled_axes,
+        }
+        return base_fixed, resolved_axes
+
+    preset = next((p for p in STUDIO_PRESETS if p["id"] == norm_preset_id), None)
+    base_fixed = dict(preset["fixed_elements"]) if preset else {
         "subject": "",
         "style": "High-end editorial photography, natural tonal range, crisp micro-detail",
         "color_palette": "Balanced natural neutrals, warm highlights, deep graphite shadows",
@@ -369,29 +477,41 @@ def compose_prompt_from_axes(
     segments: List[str] = []
 
     if has_reference:
-        extra_distinct = (
-            " Ensure an unmistakably different layout and silhouette from the input photo."
-            if (reference_reused or strong_variation)
-            else ""
-        )
         if ref_mode == "subject_keep":
+            extra_distinct = (
+                " Change pose, spacing, and secondary details noticeably on the same surface."
+                if (reference_reused or strong_variation)
+                else ""
+            )
             segments.append(
-                f"Create a fresh variation of the attached reference image for \"{clean_theme}\": "
-                "preserve its exact artistic medium, texture, color palette, and core subject motif, "
-                f"while re-staging the pose, placement, and framing.{extra_distinct}"
+                f"Create a close \"{clean_theme}\" variation of the attached reference image: "
+                "lock its exact surface carrier (flat 2D sheet stays flat on paper; "
+                "on-skin or real photo stays on-skin/in-situ), preserving medium, palette, "
+                f"and core subject motif while varying layout and secondary details.{extra_distinct}"
             )
         elif ref_mode == "style_only":
+            extra_distinct = (
+                " Ensure an unmistakably different subject silhouette and layout from the input photo."
+                if (reference_reused or strong_variation)
+                else ""
+            )
             segments.append(
                 f"Create a brand-new \"{clean_theme}\" visual borrowing ONLY the artistic medium, "
                 "surface texture, lighting mood, and color palette from the attached reference image, "
-                f"depicting an entirely new subject arrangement.{extra_distinct}"
+                f"freely staging a fresh subject arrangement and setting.{extra_distinct}"
             )
         else:
-            # "balanced" (Default): 100% Style DNA lock + fresh original scene in same theme
+            # "balanced" (Default): 100% Style + Carrier lock, fresh motif/design inside that carrier
+            extra_distinct = (
+                " Redesign the primary motif shape, element count, and internal geometry substantially so it never copies the input 1:1."
+                if (reference_reused or strong_variation)
+                else ""
+            )
             segments.append(
-                f"Create a brand-new original \"{clean_theme}\" visual matching 100% of the attached "
-                "reference image's Style DNA (exact medium, brushwork/surface texture, shading depth, and tonal palette), "
-                f"staging a fresh scene and composition rather than copying the reference layout.{extra_distinct}"
+                f"Create a new \"{clean_theme}\" design matching 100% of the attached reference's Style DNA "
+                "and exact surface carrier (if flat 2D flash/art, keep flat on paper—never place on skin/3D; "
+                "if on skin/nails/object, keep on-skin/in-situ—never flatten to paper), "
+                f"inventing a fresh motif structure, linework flow, and arrangement.{extra_distinct}"
             )
 
         if axis_parts:
@@ -492,6 +612,7 @@ def plan_job_variations(
         preset_id=preset_id,
         fixed_elements=fixed_elements,
         variation_axes=variation_axes,
+        reference_mode=reference_mode,
     )
 
     enabled_axes = resolved_axes.get("enabled_axes") or dict(DEFAULT_ENABLED_AXES)
@@ -614,6 +735,7 @@ def mutate_generation_variation(
         preset_id=job.get("preset_id") or "",
         fixed_elements=job.get("fixed_elements"),
         variation_axes=job.get("variation_axes"),
+        reference_mode=job.get("reference_mode") or "prompt_only",
     )
     enabled_axes = resolved_axes.get("enabled_axes") or dict(DEFAULT_ENABLED_AXES)
     angles = resolved_axes["camera_angles"]

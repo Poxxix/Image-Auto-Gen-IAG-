@@ -43,6 +43,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import {
   EXPORT_IMAGE_FORMAT_OPTIONS,
+  REFERENCE_ADAPTIVE_PRESET_ID,
+  REFERENCE_SAFE_AXES_DEFAULTS,
   REFERENCE_STRENGTH_OPTIONS,
   getReferenceImageUrl,
   suggestVariationAxes,
@@ -394,6 +396,42 @@ export function PlanScreen({
       [gen.id]: updatedAxes,
     }))
     await handleSaveAxes(gen, updatedAxes)
+  }
+
+  const handleToggleRefPresetDraft = (enablePreset: boolean) => {
+    if (!enablePreset) {
+      setPresetDraft(REFERENCE_ADAPTIVE_PRESET_ID)
+      setAiSuggestLabel(null)
+      setFixedDraft({
+        subject: "",
+        style: "",
+        color_palette: "",
+        brand_mood: "",
+      })
+      setEnabledFixedDraft({
+        subject: false,
+        style: false,
+        color_palette: false,
+        brand_mood: false,
+      })
+      setAxesPoolDraft({
+        camera_angles: REFERENCE_SAFE_AXES_DEFAULTS.camera_angles.join("\n"),
+        compositions: REFERENCE_SAFE_AXES_DEFAULTS.compositions.join("\n"),
+        lighting: REFERENCE_SAFE_AXES_DEFAULTS.lighting.join("\n"),
+        atmospheres: REFERENCE_SAFE_AXES_DEFAULTS.atmospheres.join("\n"),
+        custom_axis: REFERENCE_SAFE_AXES_DEFAULTS.custom_axis.join("\n"),
+      })
+      setCustomAxisLabelDraft(REFERENCE_SAFE_AXES_DEFAULTS.custom_axis_label)
+      setEnabledAxesDraft({
+        camera_angles: false,
+        compositions: true,
+        lighting: true,
+        atmospheres: false,
+        custom_axis: true,
+      })
+    } else {
+      handleApplyPresetDraft(presets[0]?.id || "auto_universal")
+    }
   }
 
   const handleApplyPresetDraft = (presetId: string) => {
@@ -882,9 +920,24 @@ export function PlanScreen({
             {presets.length > 0 && (
               <div className="flex flex-col gap-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-[#F5F5F5]">
-                    Style presets
-                  </span>
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xs font-medium text-[#F5F5F5]">
+                      Style presets
+                    </span>
+                    {job.reference_mode !== "prompt_only" && (
+                      <label className="inline-flex items-center gap-2 rounded border border-[#2E2E2E] bg-[#171717] px-2 py-0.5 text-[11px] text-[#A3A3A3] cursor-pointer">
+                        <span>
+                          {presetDraft === REFERENCE_ADAPTIVE_PRESET_ID
+                            ? "Preset off (Adaptive per ref)"
+                            : "Preset on"}
+                        </span>
+                        <Switch
+                          checked={presetDraft !== REFERENCE_ADAPTIVE_PRESET_ID}
+                          onCheckedChange={handleToggleRefPresetDraft}
+                        />
+                      </label>
+                    )}
+                  </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {aiSuggestLabel && (
                       <span className="rounded border border-[#404040] bg-[#262626] px-2 py-0.5 text-[11px] text-[#F5F5F5]">
@@ -913,7 +966,14 @@ export function PlanScreen({
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                <div
+                  className={cn(
+                    "grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 transition-opacity duration-150",
+                    job.reference_mode !== "prompt_only" &&
+                      presetDraft === REFERENCE_ADAPTIVE_PRESET_ID &&
+                      "opacity-50 hover:opacity-90"
+                  )}
+                >
                   {presets.map((p) => (
                     <button
                       key={p.id}
@@ -1218,7 +1278,9 @@ export function PlanScreen({
             </span>
           </div>
           <p className="mt-0.5 truncate text-xs sm:text-sm font-medium text-[#F5F5F5]">
-            {job.fixed_elements?.style || "Adaptive high-resolution visual style"}
+            {job.preset_id === REFERENCE_ADAPTIVE_PRESET_ID
+              ? "Adaptive per reference (paper stays paper, skin stays skin)"
+              : job.fixed_elements?.style || "Adaptive high-resolution visual style"}
           </p>
         </button>
 

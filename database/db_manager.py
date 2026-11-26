@@ -292,6 +292,19 @@ class DatabaseManager:
                         "UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'default_metadata_export_mode'",
                         (json.dumps("csv"), now_iso()),
                     )
+            # One-time migration: keep reference attached on similarity retry by default
+            mig_row = conn.execute(
+                "SELECT key FROM settings WHERE key = '_mig_keep_ref_retry_v1'"
+            ).fetchone()
+            if not mig_row:
+                conn.execute(
+                    "UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'drop_ref_on_similarity_retry'",
+                    (json.dumps(False), now_iso()),
+                )
+                conn.execute(
+                    "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+                    ("_mig_keep_ref_retry_v1", json.dumps(True), now_iso()),
+                )
         self._settings_cache = None
 
     # =========================================================================

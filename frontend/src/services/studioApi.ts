@@ -5,6 +5,44 @@ export type ReferenceStrengthMode = "subject_keep" | "balanced" | "style_only"
 export type RunMode = "fixed" | "continuous"
 export type MetadataExportMode = "csv" | "none"
 
+export const REFERENCE_ADAPTIVE_PRESET_ID = "reference_adaptive"
+
+export const REFERENCE_SAFE_AXES_DEFAULTS = {
+  camera_angles: [
+    "Maintain the exact viewing angle and framing scale of the reference image",
+  ],
+  compositions: [
+    "Re-arranged primary motif silhouette with balanced asymmetrical flow",
+    "Fresh central focal structure with clean breathing margins",
+    "Redesigned secondary ornament placement and organic visual rhythm",
+    "Shifted focal weight with varied element scale and spacing",
+    "Diagonal motif movement with fresh contour and negative-space balance",
+    "Restructured motif proportions and refined internal detail hierarchy",
+    "Alternating compact and open detail clusters within original framing",
+    "Fresh geometric and organic curve variation across the core design",
+  ],
+  lighting: [
+    "Consistent illumination and shading fidelity matching the reference surface",
+    "Refined tonal contrast between crisp linework and soft midtone gradients",
+    "Subtle highlight and shadow balance faithful to the reference medium",
+    "Clean micro-detail clarity with natural, unforced tonal roll-off",
+    "Delicate stipple, wash, or smooth shading depth matching the reference",
+    "Crisp edge definition paired with soft transitional shading",
+  ],
+  atmospheres: [
+    "Preserve the exact surface medium and background carrier of the reference image",
+  ],
+  custom_axis_label: "Motif redesign",
+  custom_axis: [
+    "Invent new primary shape contours, element count, and fine ornament details",
+    "Replace the exact reference pattern with a fresh sibling design in the same craft",
+    "Vary line weight, curvature, and decorative accents while keeping the same medium",
+    "Create a distinct companion motif with new symmetry and focal sub-elements",
+    "Redraw the core subject with fresh proportions, posture, and detail placement",
+    "Introduce new structural branching and secondary micro-motifs in the same style",
+  ],
+} as const
+
 export const REFERENCE_STRENGTH_OPTIONS: ReadonlyArray<{
   id: ReferenceStrengthMode
   label: string
@@ -13,21 +51,24 @@ export const REFERENCE_STRENGTH_OPTIONS: ReadonlyArray<{
 }> = [
   {
     id: "subject_keep",
-    label: "Giữ Chủ thể · Đổi Bố cục",
+    label: "Giữ sát mẫu · Khóa bề mặt",
     badge: "CLOSE",
-    description: "Giữ 100% style & cùng chủ thể ảnh mẫu, đổi tư thế/vị trí/ánh sáng",
+    description:
+      "Khóa chặt bề mặt (giấy ra giấy, da ra da) & chủ thể chính; chỉ đổi nhẹ bố cục và chi tiết phụ",
   },
   {
     id: "balanced",
-    label: "Khóa Style DNA · Cảnh mới",
+    label: "Đổi họa tiết mới · Khóa bề mặt",
     badge: "RECOMMENDED",
-    description: "Khóa 100% nét vẽ, chất liệu & bảng màu ảnh mẫu, dựng cảnh mới không trùng gốc",
+    description:
+      "Giấy giữ giấy, da giữ da (không nhảy bối cảnh); thiết kế lại mẫu họa tiết & đường nét mới không trùng gốc",
   },
   {
     id: "style_only",
-    label: "Chỉ mượn Màu & Chất liệu",
+    label: "Chỉ mượn chất liệu · Đổi cảnh",
     badge: "LOOSE",
-    description: "Chỉ mượn chất liệu, màu & mood từ ảnh mẫu để vẽ sang chủ đề mới",
+    description:
+      "Mở khóa bối cảnh: chỉ mượn nét vẽ & bảng màu từ ảnh mẫu để tự do dựng sang cảnh mới",
   },
 ]
 

@@ -572,10 +572,16 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     if req.export_root_dir and req.export_root_dir.strip():
         db.update_settings({"export_root_dir": export_root})
 
+    effective_preset_id = (
+        req.preset_id
+        if req.preset_id
+        else ("reference_adaptive" if req.reference_mode != "prompt_only" else "")
+    )
     resolved_fixed, resolved_axes = resolve_axes_and_fixed(
-        preset_id=req.preset_id,
+        preset_id=effective_preset_id,
         fixed_elements=req.fixed_elements,
         variation_axes=req.variation_axes,
+        reference_mode=req.reference_mode,
     )
 
     initial_count = (
@@ -598,7 +604,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
             reference_strength=ref_strength,
             reference_ids=ref_ids,
             cycle_references=req.cycle_references,
-            preset_id=req.preset_id,
+            preset_id=effective_preset_id,
             fixed_elements=resolved_fixed,
             variation_axes=resolved_axes,
         )
@@ -671,7 +677,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         optimize_prompt_english=req.optimize_prompt_english,
         model=req.model,
         export_root_dir=export_root,
-        preset_id=req.preset_id,
+        preset_id=effective_preset_id,
         fixed_elements=resolved_fixed,
         variation_axes=resolved_axes,
         reference_ids=ref_ids,
@@ -791,8 +797,15 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         except ValueError as verr:
             raise HTTPException(status_code=400, detail=str(verr))
 
-    if any(k in updates for k in ("fixed_elements", "variation_axes")):
-        effective_preset = str(updates.get("preset_id") or existing.get("preset_id") or "")
+    if any(k in updates for k in ("preset_id", "fixed_elements", "variation_axes")):
+        effective_preset = str(
+            updates["preset_id"]
+            if "preset_id" in updates
+            else (existing.get("preset_id") or "")
+        )
+        effective_ref_mode = str(
+            updates.get("reference_mode") or existing.get("reference_mode") or "prompt_only"
+        )
         effective_fixed = (
             updates["fixed_elements"]
             if "fixed_elements" in updates
@@ -807,17 +820,16 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
             preset_id=effective_preset,
             fixed_elements=effective_fixed,
             variation_axes=effective_axes,
+            reference_mode=effective_ref_mode,
         )
-        if "fixed_elements" in updates:
-            updates["fixed_elements"] = norm_fixed
-        if "variation_axes" in updates:
-            updates["variation_axes"] = norm_axes
+        updates["fixed_elements"] = norm_fixed
+        updates["variation_axes"] = norm_axes
 
     updated = db.update_job(job_id, **updates) or existing
 
-    # If theme, base_prompt, fixed_elements, or variation_axes (enabled_axes / custom_axis_label)
+    # If theme, base_prompt, preset_id, fixed_elements, or variation_axes (enabled_axes / custom_axis_label)
     # were updated on the job, recompose prompt_final for unlocked `planned` turns so changes apply immediately.
-    if any(k in updates for k in ("theme", "base_prompt", "fixed_elements", "variation_axes", "reference_strength")):
+    if any(k in updates for k in ("theme", "base_prompt", "preset_id", "fixed_elements", "variation_axes", "reference_strength")):
         job_fixed = updated.get("fixed_elements") or {}
         job_va = updated.get("variation_axes") or {}
         job_enabled = job_va.get("enabled_axes")
@@ -1121,6 +1133,7 @@ def api_update_generation(gen_id: int, req: UpdateGenerationRequest) -> Dict[str
             turn_axes=turn_axes,
             has_reference=bool(ref_id),
             reference_reused=False,
+            reference_strength=str(job.get("reference_strength") or "balanced"),
             variation_number=int(gen["index_num"]),
             enabled_axes=job_va.get("enabled_axes"),
             custom_axis_label=str(turn_axes.get("custom_axis_label") or job_va.get("custom_axis_label") or "Custom Variation"),

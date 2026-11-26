@@ -459,6 +459,7 @@ class JobRunner:
             aspect_ratio=job.get("aspect_ratio") or "1:1",
             model=job.get("model") or "chrome-cdp/gemini",
             reference_mode=job.get("reference_mode") or "prompt_only",
+            reference_strength=str(job.get("reference_strength") or "balanced"),
             reference_ids=job.get("reference_ids") or [],
             cycle_references=bool(job.get("cycle_references", True)),
             preset_id=job.get("preset_id") or "",

@@ -932,10 +932,10 @@ export function SettingsPanel({
                 <div className="flex items-center justify-between gap-4 py-3">
                   <div>
                     <p className="text-xs font-medium text-[#F5F5F5]">
-                      Reference similarity guard &amp; auto re-roll
+                      Reference similarity guard &amp; motif re-roll
                     </p>
                     <p className="text-[11px] text-[#737373]">
-                      Rejects near-clones of reference inputs, rotates variation axes, and drops raw ref on final retry
+                      Detects near-clones of reference inputs and retries with stronger motif redesign while keeping the reference attached
                     </p>
                   </div>
                   <Switch
@@ -944,6 +944,25 @@ export function SettingsPanel({
                       setForm((f) => ({
                         ...f,
                         reference_similarity_check: checked,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <div>
+                    <p className="text-xs font-medium text-[#F5F5F5]">
+                      Drop reference image on final similarity retry
+                    </p>
+                    <p className="text-[11px] text-[#737373]">
+                      Off by default so retries never lose surface context (e.g. paper vs skin)
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.drop_ref_on_similarity_retry ?? false}
+                    onCheckedChange={(checked) =>
+                      setForm((f) => ({
+                        ...f,
                         drop_ref_on_similarity_retry: checked,
                       }))
                     }
