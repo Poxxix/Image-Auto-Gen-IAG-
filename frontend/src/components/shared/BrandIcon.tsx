@@ -44,7 +44,7 @@ export function BrandIcon({
       height={size}
       style={{ width: size, height: size }}
       className={cn(
-        "inline-block shrink-0 object-contain select-none",
+        "inline-block shrink-0 object-contain select-none grayscale opacity-85",
         meta.isInkMono && "invert brightness-100",
         className
       )}
@@ -57,7 +57,7 @@ export function BrandIcon({
 
   return (
     <span
-      className="inline-flex shrink-0 items-center justify-center rounded-xl bg-white/[0.05] ring-1 ring-white/[0.09]"
+      className="inline-flex shrink-0 items-center justify-center rounded-md border border-[#2E2E2E] bg-[#262626]"
       style={{ width: size + 16, height: size + 16 }}
     >
       {imgEl}

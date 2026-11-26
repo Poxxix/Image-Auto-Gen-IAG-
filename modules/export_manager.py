@@ -38,14 +38,14 @@ CSV_HEADERS: List[str] = [
 
 _MANIFEST_LOCK = threading.Lock()
 _MANIFEST_LAST_WRITE: Dict[int, float] = {}
-_JOB_SYNC_LOCKS: Dict[int, threading.Lock] = {}
+_JOB_SYNC_LOCKS: Dict[int, threading.RLock] = {}
 
 
-def _get_job_sync_lock(job_id: int) -> threading.Lock:
+def _get_job_sync_lock(job_id: int) -> threading.RLock:
     with _MANIFEST_LOCK:
         lock = _JOB_SYNC_LOCKS.get(job_id)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             _JOB_SYNC_LOCKS[job_id] = lock
         return lock
 
@@ -312,7 +312,8 @@ def sync_job_manifest(
 
 
 def get_or_build_job_csv_bytes(job_id: int) -> tuple[bytes, str]:
-    """Returns `(utf8_bytes, download_filename)` for `GET /api/jobs/{job_id}/csv`."""
+    """Returns `(utf8_bytes, download_filename)` for `GET /api/jobs/{job_id}/csv`, reconciling folder deletions first."""
+    reconcile_job_export_folder(job_id)
     job = db.get_job(job_id)
     if not job:
         raise ValueError(f"Job #{job_id} not found.")
@@ -320,8 +321,8 @@ def get_or_build_job_csv_bytes(job_id: int) -> tuple[bytes, str]:
     if normalize_metadata_export_mode(job.get("metadata_export_mode"), default="csv") == "csv":
         try:
             export_dir = Path(job["export_dir"])
-            _safe_mkdir(export_dir)
-            _atomic_write_text(export_dir / CSV_FILENAME, csv_text)
+            if export_dir.exists():
+                _atomic_write_text(export_dir / CSV_FILENAME, csv_text)
         except OSError:
             pass
     dl_name = f"{job['slug']}-pin-import.csv" if job.get("slug") else CSV_FILENAME
@@ -353,60 +354,27 @@ def sync_generation_and_manifest(
         sync_job_manifest(job_id, job=job)
 
 
-def cleanup_and_resequence_after_delete_generation(
-    job_id: int,
-    delete_result: Dict[str, Any],
+def _apply_reindexed_file_renames(
+    job: Dict[str, Any],
+    reindexed: List[Dict[str, Any]],
 ) -> None:
     """
-    Removes the deleted generation's files on disk, renames re-indexed sibling images
-    (`-2 -> -1`), and re-syncs `pin-import.csv` so `File name` entries stay 100% matched.
+    Two-phase collision-safe file rename (`old -> .reseq.tmp -> new`) across `export_dir`
+    so re-sequenced sibling images (`-3 -> -2`, `-4 -> -3`) never overwrite one another.
     """
-    job = db.get_job(job_id)
-    if not job:
+    if not reindexed:
         return
     export_dir = Path(job["export_dir"])
+    staged: List[tuple[int, Path, Path, str, str]] = []
 
-    deleted = delete_result.get("deleted") or {}
-    for fname_key in ("image_file", "sidecar_file", "caption_file"):
-        fname = deleted.get(fname_key)
-        if fname:
-            fpath = export_dir / fname
-            if fpath.exists():
-                try:
-                    fpath.unlink()
-                except Exception:
-                    pass
-    if deleted.get("image_path"):
-        p = Path(deleted["image_path"])
-        if p.exists():
-            try:
-                p.unlink()
-            except Exception:
-                pass
-
-    for item in delete_result.get("reindexed") or []:
-        gen_id = item["id"]
+    for item in reindexed:
+        gen_id = int(item["id"])
         old_idx = int(item["old_index"])
         new_idx = int(item["new_index"])
         old_prefix = build_generation_file_prefix(job, old_idx)
         new_prefix = build_generation_file_prefix(job, new_idx)
-        old_img_file = item.get("image_file") or ""
-
-        updates: Dict[str, Any] = {}
-        if old_img_file:
-            ext = Path(old_img_file).suffix.lstrip(".") or "png"
-            new_img_file = f"{new_prefix}.{ext}"
-            old_img_path = export_dir / old_img_file
-            new_img_path = export_dir / new_img_file
-            if old_img_path.exists() and old_img_path != new_img_path:
-                try:
-                    os.replace(old_img_path, new_img_path)
-                except Exception:
-                    pass
-            updates["image_file"] = new_img_file
-            updates["image_path"] = str(new_img_path)
-            updates["sidecar_file"] = ""
-            updates["caption_file"] = ""
+        old_img_file = str(item.get("image_file") or "").strip()
+        old_img_path_str = str(item.get("image_path") or "").strip()
 
         for old_aux in (f"{old_prefix}.json", f"{old_prefix}.txt"):
             aux_path = export_dir / old_aux
@@ -416,10 +384,165 @@ def cleanup_and_resequence_after_delete_generation(
                 except Exception:
                     pass
 
-        if updates:
-            db.update_generation(gen_id, **updates)
+        if not old_img_file and not old_img_path_str:
+            continue
 
-    sync_job_manifest(job_id)
+        src_path = export_dir / old_img_file if old_img_file else Path(old_img_path_str)
+        if not src_path.exists() and old_img_path_str:
+            alt_p = Path(old_img_path_str)
+            if alt_p.exists():
+                src_path = alt_p
+
+        ext = Path(old_img_file or src_path.name).suffix.lstrip(".") or "png"
+        new_img_file = f"{new_prefix}.{ext}"
+        new_img_path = export_dir / new_img_file
+
+        if src_path.exists() and src_path != new_img_path:
+            tmp_stage = export_dir / f".reseq_{gen_id}_{new_idx}.{ext}.tmp"
+            try:
+                os.replace(src_path, tmp_stage)
+                staged.append((gen_id, tmp_stage, new_img_path, new_img_file, str(new_img_path)))
+                continue
+            except Exception:
+                pass
+
+        db.update_generation(
+            gen_id,
+            image_file=new_img_file,
+            image_path=str(new_img_path),
+            sidecar_file="",
+            caption_file="",
+        )
+
+    for gen_id, tmp_stage, new_img_path, new_img_file, new_img_path_str in staged:
+        try:
+            if tmp_stage.exists():
+                os.replace(tmp_stage, new_img_path)
+        except Exception:
+            pass
+        db.update_generation(
+            gen_id,
+            image_file=new_img_file,
+            image_path=new_img_path_str,
+            sidecar_file="",
+            caption_file="",
+        )
+
+
+def cleanup_and_resequence_after_delete_generation(
+    job_id: int,
+    delete_result: Dict[str, Any],
+) -> None:
+    """
+    Removes the deleted generation(s)' files on disk, renames re-indexed sibling images
+    (`-2 -> -1`), and re-syncs `pin-import.csv` so `File name` entries stay 100% matched.
+    """
+    with _get_job_sync_lock(job_id):
+        job = db.get_job(job_id)
+        if not job:
+            return
+        export_dir = Path(job["export_dir"])
+
+        deleted_list = delete_result.get("deleted_items") or (
+            [delete_result["deleted"]] if delete_result.get("deleted") else []
+        )
+        for deleted in deleted_list:
+            if not deleted:
+                continue
+            for fname_key in ("image_file", "sidecar_file", "caption_file"):
+                fname = deleted.get(fname_key)
+                if fname:
+                    fpath = export_dir / fname
+                    if fpath.exists():
+                        try:
+                            fpath.unlink()
+                        except Exception:
+                            pass
+            if deleted.get("image_path"):
+                p = Path(deleted["image_path"])
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+
+        _apply_reindexed_file_renames(job, delete_result.get("reindexed") or [])
+        sync_job_manifest(job_id)
+
+
+def reconcile_job_export_folder(
+    job_id: int,
+    allow_when_running: bool = False,
+) -> Dict[str, Any]:
+    """
+    2-Way Folder & CSV Synchronizer:
+    If the user deleted bad images directly inside Finder (`export_dir`), detects missing
+    image files on disk, removes their orphaned DB records, re-sequences remaining images
+    cleanly (`-1, -2, -3...`) on disk + DB, updates job counts/status, and rewrites `pin-import.csv`.
+    """
+    with _get_job_sync_lock(job_id):
+        job = db.get_job(job_id)
+        if not job:
+            return {"removed_missing": 0, "reindexed": 0, "job": None}
+
+        export_dir = Path(job["export_dir"])
+        if not export_dir.exists():
+            return {"removed_missing": 0, "reindexed": 0, "job": job}
+
+        if job.get("status") == "running" and not allow_when_running:
+            sync_job_manifest(job_id, job=job)
+            return {"removed_missing": 0, "reindexed": 0, "job": job}
+
+        missing_gen_ids: List[int] = []
+        for gen in job.get("generations") or []:
+            has_recorded_file = bool(str(gen.get("image_file") or "").strip())
+            if (
+                has_recorded_file
+                and gen.get("status") in ("completed", "metadata_pending")
+                and not _generation_has_saved_image(export_dir, gen)
+            ):
+                missing_gen_ids.append(int(gen["id"]))
+
+        removed_count = 0
+        reindexed_count = 0
+        if missing_gen_ids:
+            del_res = db.delete_generations_bulk_with_resequence(job_id, missing_gen_ids)
+            if del_res:
+                removed_count = len(del_res.get("deleted_items") or [])
+                reindexed_list = del_res.get("reindexed") or []
+                reindexed_count = len(reindexed_list)
+                fresh_job = db.get_job(job_id) or job
+                _apply_reindexed_file_renames(fresh_job, reindexed_list)
+
+        # Also verify every remaining saved image filename matches its current `index_num`
+        fresh_job = db.get_job(job_id) or job
+        extra_renames: List[Dict[str, Any]] = []
+        for gen in fresh_job.get("generations") or []:
+            cur_file = str(gen.get("image_file") or "").strip()
+            if not cur_file or not _generation_has_saved_image(export_dir, gen):
+                continue
+            ext = Path(cur_file).suffix.lstrip(".") or "png"
+            expected_file = f"{build_generation_file_prefix(fresh_job, int(gen['index_num']))}.{ext}"
+            if cur_file != expected_file:
+                extra_renames.append(
+                    {
+                        "id": gen["id"],
+                        "old_index": gen["index_num"],
+                        "new_index": gen["index_num"],
+                        "image_file": cur_file,
+                        "image_path": gen.get("image_path") or "",
+                    }
+                )
+        if extra_renames:
+            _apply_reindexed_file_renames(fresh_job, extra_renames)
+            reindexed_count += len(extra_renames)
+
+        sync_job_manifest(job_id)
+        return {
+            "removed_missing": removed_count,
+            "reindexed": reindexed_count,
+            "job": db.get_job(job_id),
+        }
 
 
 def build_job_zip_file(job_id: int) -> tuple[Path, str]:
@@ -427,6 +550,7 @@ def build_job_zip_file(job_id: int) -> tuple[Path, str]:
     Packages all exported images (plus `pin-import.csv` in `csv` mode) inside `job['export_dir']`
     into a temporary ZIP file on disk using `ZIP_STORED`.
     """
+    reconcile_job_export_folder(job_id)
     job = db.get_job(job_id)
     if not job:
         raise ValueError(f"Job #{job_id} not found.")

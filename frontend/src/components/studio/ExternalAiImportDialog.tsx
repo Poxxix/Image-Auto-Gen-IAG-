@@ -3,7 +3,6 @@ import {
   Copy,
   Check,
   UploadSimple,
-  Sparkle,
   FileCode,
   ArrowsClockwise,
 } from "@phosphor-icons/react"
@@ -37,11 +36,11 @@ export interface ExternalAiImportDialogProps {
 }
 
 const TEMPLATE_KINDS = [
-  { id: "adaptive", label: "Auto / Adaptive" },
-  { id: "wallpaper", label: "Wallpaper / Screen" },
-  { id: "painting", label: "Painting / Art" },
-  { id: "front_facing", label: "Front-Facing / Hero" },
-  { id: "photography", label: "Editorial Photo" },
+  { id: "adaptive", label: "Auto adaptive" },
+  { id: "wallpaper", label: "Wallpaper" },
+  { id: "painting", label: "Painting & art" },
+  { id: "front_facing", label: "Front-facing" },
+  { id: "photography", label: "Editorial photo" },
 ]
 
 export function ExternalAiImportDialog({
@@ -116,7 +115,9 @@ export function ExternalAiImportDialog({
 
   const handleImportApply = async () => {
     if (!rawJsonInput.trim()) {
-      setImportError("Paste the JSON reply from ChatGPT / Gemini / Claude / Grok or upload a .json file.")
+      setImportError(
+        "Paste the JSON reply from ChatGPT, Gemini, Claude, or Grok, or upload a .json file."
+      )
       return
     }
     setImporting(true)
@@ -129,7 +130,7 @@ export function ExternalAiImportDialog({
       setImportError(
         err instanceof Error
           ? err.message
-          : "Could not parse pasted text into Studio Continuity & Variation Axes."
+          : "Could not parse pasted text into continuity and variation axes."
       )
     } finally {
       setImporting(false)
@@ -138,37 +139,34 @@ export function ExternalAiImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl border-white/[0.1] bg-[#090b10] text-[#f4f5f7]">
+      <DialogContent className="max-w-4xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 font-display text-xl text-white">
-            <Sparkle size={18} weight="fill" className="text-amber-300" />
-            External AI Prompt Builder &amp; JSON Import
-          </DialogTitle>
-          <DialogDescription className="text-xs text-[#9ca3af]">
-            1) Copy the tailored Master Prompt below to ChatGPT, Gemini, Claude, or Grok to refine your exact visual concept &amp; framing rules. 2) Paste or upload the AI&apos;s JSON reply back here.
+          <DialogTitle>Sample master prompt &amp; JSON import</DialogTitle>
+          <DialogDescription>
+            Copy the prompt on the left into ChatGPT, Claude, or Gemini to design custom framing and variation axes, then paste the returned JSON on the right.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="mt-2 grid grid-cols-1 gap-5 lg:grid-cols-2">
-          {/* Column 1: Copyable Master Prompt */}
-          <div className="flex flex-col gap-3 rounded-2xl bg-white/[0.025] p-4 ring-1 ring-white/[0.08]">
+        <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Step 1: Copy Sample Prompt */}
+          <div className="flex flex-col gap-3 rounded-lg border border-[#2E2E2E] bg-[#171717] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-mono-tech text-[11px] uppercase tracking-wider text-amber-300">
-                Step 1 · Sample Prompt Template
+              <span className="text-xs font-semibold text-[#F5F5F5]">
+                1. Copy sample prompt
               </span>
               <button
                 type="button"
                 onClick={handleCopyPrompt}
                 disabled={!samplePrompt || loadingPrompt}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-all cursor-pointer",
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors duration-150 cursor-pointer",
                   copiedPrompt
-                    ? "bg-emerald-500 text-[#050505]"
-                    : "bg-amber-400 text-[#050505] hover:bg-amber-300"
+                    ? "border border-[#525252] bg-[#262626] text-[#F5F5F5]"
+                    : "bg-[#FAFAFA] text-[#121212] hover:bg-[#E5E5E5]"
                 )}
               >
                 {copiedPrompt ? <Check size={12} weight="bold" /> : <Copy size={12} />}
-                {copiedPrompt ? "Copied Prompt!" : "Copy Sample Prompt"}
+                {copiedPrompt ? "Copied" : "Copy prompt"}
               </button>
             </div>
 
@@ -179,10 +177,10 @@ export function ExternalAiImportDialog({
                   type="button"
                   onClick={() => setTemplateKind(k.id)}
                   className={cn(
-                    "rounded-full px-2.5 py-1 text-[10px] font-medium ring-1 transition-all cursor-pointer",
+                    "rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors duration-150 cursor-pointer",
                     templateKind === k.id
-                      ? "bg-[#f4f5f7] text-[#050505] ring-white font-semibold"
-                      : "bg-white/[0.03] text-[#9ca3af] ring-white/[0.08] hover:text-white"
+                      ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                      : "border-[#2E2E2E] bg-[#1C1C1C] text-[#A3A3A3] hover:text-[#F5F5F5]"
                   )}
                 >
                   {k.label}
@@ -194,26 +192,30 @@ export function ExternalAiImportDialog({
               <textarea
                 readOnly
                 rows={13}
-                value={loadingPrompt ? "Generating tailored template prompt..." : samplePrompt}
-                className="w-full rounded-xl bg-black/50 p-3 font-mono-tech text-[11px] leading-relaxed text-[#d1d5db] ring-1 ring-white/[0.08] focus:outline-none"
+                value={
+                  loadingPrompt
+                    ? "Generating tailored template prompt…"
+                    : samplePrompt
+                }
+                className="w-full rounded-md border border-[#2E2E2E] bg-[#121212] p-3 font-mono-tech text-[11px] leading-relaxed text-[#A3A3A3] focus:outline-none"
               />
               {loadingPrompt && (
                 <ArrowsClockwise
                   size={15}
-                  className="animate-spin absolute right-3 top-3 text-amber-300"
+                  className="animate-spin absolute right-3 top-3 text-[#A3A3A3]"
                 />
               )}
             </div>
-            <p className="text-[11px] text-[#646b78]">
-              Tip: Paste into your favorite AI chat, describe extra requirements (e.g. &ldquo;strictly front-facing minimal jewelry cards, 150 variations&rdquo;), and ask for the JSON block back.
+            <p className="text-[11px] text-[#737373]">
+              Paste into any external chat model, describe extra constraints, and copy the JSON reply back.
             </p>
           </div>
 
-          {/* Column 2: Paste / Upload JSON back */}
-          <div className="flex flex-col gap-3 rounded-2xl bg-white/[0.025] p-4 ring-1 ring-white/[0.08]">
+          {/* Step 2: Paste or Upload JSON */}
+          <div className="flex flex-col gap-3 rounded-lg border border-[#2E2E2E] bg-[#171717] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-mono-tech text-[11px] uppercase tracking-wider text-sky-300">
-                Step 2 · Paste or Upload AI JSON
+              <span className="text-xs font-semibold text-[#F5F5F5]">
+                2. Paste or upload JSON reply
               </span>
               <div className="flex items-center gap-2">
                 <input
@@ -226,10 +228,10 @@ export function ExternalAiImportDialog({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1 text-[11px] text-[#e5e7eb] ring-1 ring-white/[0.1] hover:bg-white/[0.12] cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#383838] bg-[#262626] px-2.5 py-1 text-xs text-[#F5F5F5] hover:border-[#525252] cursor-pointer"
                 >
                   <UploadSimple size={12} />
-                  Upload .json File
+                  Upload .json
                 </button>
               </div>
             </div>
@@ -242,14 +244,14 @@ export function ExternalAiImportDialog({
                 if (importError) setImportError(null)
               }}
               placeholder={
-                'Paste the JSON reply from ChatGPT / Gemini / Claude here (markdown ```json fences are automatically stripped)...\n\n{\n  "fixed_elements": { "subject": "...", "style": "..." },\n  "variation_axes": {\n    "enabled_axes": { "camera_angles": false, "compositions": true, "lighting": true, "atmospheres": true, "custom_axis": true },\n    "custom_axis_label": "Brushwork & Surface",\n    "compositions": [...],\n    "lighting": [...],\n    "atmospheres": [...],\n    "custom_axis": [...]\n  }\n}'
+                'Paste the JSON reply here (markdown ```json fences are stripped automatically)…\n\n{\n  "fixed_elements": { "subject": "...", "style": "..." },\n  "variation_axes": {\n    "enabled_axes": { "camera_angles": false, "compositions": true, "lighting": true, "atmospheres": true, "custom_axis": true },\n    "custom_axis_label": "Brushwork & Surface",\n    "compositions": [...],\n    "lighting": [...],\n    "atmospheres": [...],\n    "custom_axis": [...]\n  }\n}'
               }
-              className="w-full rounded-xl bg-black/50 p-3 font-mono-tech text-[11px] leading-relaxed text-white placeholder:text-[#4b5563] ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-sky-400/50"
+              className="w-full rounded-md border border-[#2E2E2E] bg-[#121212] p-3 font-mono-tech text-[11px] leading-relaxed text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#A3A3A3]"
             />
 
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] px-3 py-2 ring-1 ring-white/[0.06]">
-              <span className="text-[11px] text-[#9ca3af]">
-                Also update Theme / Base Direction / Aspect Ratio if included
+            <div className="flex items-center justify-between rounded-md border border-[#2E2E2E] bg-[#1C1C1C] px-3 py-2">
+              <span className="text-xs text-[#A3A3A3]">
+                Apply theme, base direction, and aspect ratio if included
               </span>
               <Switch
                 checked={applyMetaFields}
@@ -258,7 +260,7 @@ export function ExternalAiImportDialog({
             </div>
 
             {importError && (
-              <div className="rounded-xl bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/30">
+              <div className="rounded-md border border-[#EF4444]/35 bg-[#EF4444]/10 px-3 py-2 text-xs text-[#FCA5A5]">
                 {importError}
               </div>
             )}
@@ -266,20 +268,18 @@ export function ExternalAiImportDialog({
             <div className="flex items-center justify-end gap-2 pt-1">
               <StudioButton
                 variant="secondary"
-                className="h-9 px-3.5 text-xs"
                 onClick={() => onOpenChange(false)}
               >
                 Cancel
               </StudioButton>
               <StudioButton
                 variant="primary"
-                className="h-9 px-4 text-xs"
                 loading={importing}
                 disabled={!rawJsonInput.trim() || importing}
                 onClick={handleImportApply}
                 icon={<FileCode size={14} />}
               >
-                Import &amp; Apply into Studio
+                Import &amp; apply
               </StudioButton>
             </div>
           </div>

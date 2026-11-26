@@ -4,8 +4,8 @@ import {
   UploadSimple,
   Compass,
   Sliders,
-  ArrowRight,
   Play,
+  ListChecks,
   Trash,
   CheckCircle,
   LockKey,
@@ -17,7 +17,7 @@ import {
   Wind,
   MagicWand,
   FileCode,
-  Sparkle as SparkleIcon,
+  CaretDown,
 } from "@phosphor-icons/react"
 import { StudioPanel, StudioButton, StudioBadge } from "@/components/shared/StudioPrimitives"
 import { BrandIcon } from "@/components/shared/BrandIcon"
@@ -32,6 +32,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import {
   EXPORT_IMAGE_FORMAT_OPTIONS,
+  REFERENCE_STRENGTH_OPTIONS,
   formatPicassyKeyword,
   getReferenceImageUrl,
   suggestVariationAxes,
@@ -43,6 +44,7 @@ import {
   type FilenameStyle,
   type FixedElements,
   type ImageSetJob,
+  type ReferenceStrengthMode,
   type JobVariationAxesPool,
   type MetadataExportMode,
   type ExportImageFormat,
@@ -84,6 +86,11 @@ export interface CreateScreenProps {
   onUploadReferences: (files: File[]) => Promise<ReferenceItem[]>
   onDiscoverPinterest: (queryOrUrl: string, limit: number) => Promise<ReferenceItem[]>
   onDeleteReference: (refId: number) => Promise<void>
+  onBulkDeleteReferences?: (options: {
+    reference_ids?: number[]
+    source_type?: "local_upload" | "pinterest"
+    delete_all?: boolean
+  }) => Promise<void>
   onCreateJob: (payload: CreateJobPayload) => Promise<void>
   onSelectJob: (job: ImageSetJob, tab: StudioTab) => void
   onDeleteJob: (jobId: number, deleteFiles: boolean) => Promise<void>
@@ -118,11 +125,11 @@ const RATIO_META: Record<
   string,
   { label: string; res: string; wClass: string; hClass: string }
 > = {
-  "1:1": { label: "Square", res: "1080×1080", wClass: "w-6", hClass: "h-6" },
-  "4:5": { label: "Editorial", res: "1080×1350", wClass: "w-5", hClass: "h-6" },
-  "9:16": { label: "Vertical", res: "1080×1920", wClass: "w-4", hClass: "h-7" },
-  "16:9": { label: "Cinema", res: "1920×1080", wClass: "w-7", hClass: "h-4" },
-  "3:2": { label: "35mm Film", res: "1620×1080", wClass: "w-6", hClass: "h-4" },
+  "1:1": { label: "Square", res: "1080×1080", wClass: "w-5", hClass: "h-5" },
+  "4:5": { label: "Editorial", res: "1080×1350", wClass: "w-4", hClass: "h-5" },
+  "9:16": { label: "Vertical", res: "1080×1920", wClass: "w-3.5", hClass: "h-6" },
+  "16:9": { label: "Cinema", res: "1920×1080", wClass: "w-6", hClass: "h-3.5" },
+  "3:2": { label: "35mm", res: "1620×1080", wClass: "w-5", hClass: "h-3.5" },
 }
 
 const DEFAULT_CREATE_CATEGORIES = [
@@ -152,6 +159,7 @@ export function CreateScreen({
   onUploadReferences,
   onDiscoverPinterest,
   onDeleteReference,
+  onBulkDeleteReferences,
   onCreateJob,
   onSelectJob,
   onDeleteJob,
@@ -170,6 +178,9 @@ export function CreateScreen({
   const [preferredCdpSlot, setPreferredCdpSlot] = React.useState<number>(0)
   const [basePrompt, setBasePrompt] = React.useState("")
   const [referenceMode, setReferenceMode] = React.useState<ReferenceMode>("prompt_only")
+  const [referenceStrength, setReferenceStrength] =
+    React.useState<ReferenceStrengthMode>("balanced")
+  const [deletingRefBusy, setDeletingRefBusy] = React.useState(false)
   const [runMode, setRunMode] = React.useState<RunMode>("fixed")
   const [targetCount, setTargetCount] = React.useState<number>(
     settings?.default_target_count || 6
@@ -249,7 +260,7 @@ export function CreateScreen({
     if (settings.export_root_dir && !exportRootDir) {
       setExportRootDir(settings.export_root_dir)
     }
-  }, [settings])
+  }, [settings, exportRootDir])
 
   const [selectedPresetId, setSelectedPresetId] = React.useState<string>(
     presets[0]?.id || "auto_universal"
@@ -292,6 +303,8 @@ export function CreateScreen({
   const [discovering, setDiscovering] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [showAxesConfig, setShowAxesConfig] = React.useState(false)
+  const [showShotPreview, setShowShotPreview] = React.useState(false)
+  const [showCaptionEditor, setShowCaptionEditor] = React.useState(false)
   const [showImportDialog, setShowImportDialog] = React.useState(false)
   const [suggestingAxes, setSuggestingAxes] = React.useState(false)
   const [aiSuggestSource, setAiSuggestSource] = React.useState<string | null>(null)
@@ -303,6 +316,17 @@ export function CreateScreen({
     () => providers.find((p) => p.id === selectedModel) || providers[0],
     [providers, selectedModel]
   )
+
+  const supportedRatios =
+    currentModelInfo?.supported_aspect_ratios || aspectRatios
+
+  const supportedImageFormats =
+    (currentModelInfo?.supported_formats as ExportImageFormat[] | undefined) || [
+      "original",
+      "png",
+      "jpg",
+      "webp",
+    ]
 
   const handleApplyPreset = (presetId: string) => {
     setSelectedPresetId(presetId)
@@ -349,10 +373,18 @@ export function CreateScreen({
     setSelectedPresetId("ai_custom")
     setAiSuggestSource(res.source_label)
     if (applyMetaFields) {
-      if (res.theme) setTheme(res.theme)
+      if (res.theme) {
+        setTheme(res.theme)
+        if (!primaryTagManualRef.current) {
+          setPrimaryTag(formatPicassyKeyword(res.theme))
+        }
+      }
       if (res.base_prompt) setBasePrompt(res.base_prompt)
       if (res.aspect_ratio && supportedRatios.includes(res.aspect_ratio)) {
         setAspectRatio(res.aspect_ratio)
+      }
+      if (res.reference_strength) {
+        setReferenceStrength(res.reference_strength)
       }
     }
     setFixedElements({
@@ -392,7 +424,7 @@ export function CreateScreen({
 
   const handleSuggestAxes = async () => {
     if (!theme.trim()) {
-      setSuggestError("Please enter a Set Theme / Subject above first so AI can tailor the axes.")
+      setSuggestError("Enter a theme above first so AI can tailor the variation axes.")
       return
     }
     setSuggestingAxes(true)
@@ -483,12 +515,13 @@ export function CreateScreen({
 
     return {
       theme: theme.trim(),
-      primary_tag: (primaryTag.trim() || theme.trim()),
+      primary_tag: primaryTag.trim() || theme.trim(),
       category: category.trim(),
       filename_style: filenameStyle,
       preferred_cdp_slot: preferredCdpSlot,
       base_prompt: basePrompt.trim(),
       reference_mode: referenceMode,
+      reference_strength: referenceStrength,
       run_mode: runMode,
       target_count: targetCount,
       batch_size: batchSize,
@@ -540,139 +573,134 @@ export function CreateScreen({
     currentModelInfo &&
     !currentModelInfo.supports_reference_image
 
-  const supportedRatios =
-    currentModelInfo?.supported_aspect_ratios || aspectRatios
-
-  const supportedImageFormats = (
-    (currentModelInfo?.supported_formats as ExportImageFormat[] | undefined) || [
-      "original",
-      "png",
-      "jpg",
-      "webp",
-    ]
-  )
-
   const parsedAngles = splitLines(axesText.camera_angles)
   const parsedLighting = splitLines(axesText.lighting)
   const parsedComps = splitLines(axesText.compositions)
   const parsedAtmos = splitLines(axesText.atmospheres)
   const parsedCustom = splitLines(axesText.custom_axis)
 
+  const activePresetLabel =
+    selectedPresetId === "ai_custom"
+      ? "AI custom"
+      : presets.find((p) => p.id === selectedPresetId)?.label || "Preset"
+
+  const kwSlug = slugifyKeywordPreview(primaryTag || theme)
+  const cleanTitleKw = formatPicassyKeyword(primaryTag || theme) || "Beautiful Image"
+  const extPreview = exportImageFormat === "original" ? "orig" : exportImageFormat
+  const sampleFile1 = filenameStyle === "studio_seq" ? `001_${kwSlug}` : `${kwSlug}-1`
+  const sampleFile2 = filenameStyle === "studio_seq" ? `002_${kwSlug}` : `${kwSlug}-2`
+
   return (
-    <div className="flex flex-col gap-8">
-      {/* Studio Header */}
-      <div className="flex flex-col justify-between gap-6 border-b border-white/[0.06] pb-7 lg:flex-row lg:items-end">
+    <div className="flex flex-col gap-5">
+      {/* Screen Header */}
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[#2E2E2E] pb-4">
         <div>
-          <p className="font-mono-tech text-[11px] uppercase tracking-[0.22em] text-[#9ca3af]">
-            01 · VISUAL BRIEF & VARIATION ATELIER
-          </p>
-          <h1 className="mt-2 font-display text-3xl sm:text-5xl font-semibold tracking-tight text-[#f4f5f7]">
-            Compose a theme-driven image set.
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-[#F5F5F5]">
+            Create image set
           </h1>
-          <p className="mt-2 max-w-2xl text-sm sm:text-base text-[#9ca3af]">
-            Enter a theme, choose your inspiration source, and lock your brand continuity while the studio plans distinct camera, lighting, composition, and atmosphere variations.
+          <p className="mt-0.5 max-w-2xl text-xs sm:text-sm text-[#A3A3A3]">
+            Set your Picassy keyword and visual source on the left, then configure size, Chrome slot, and export options on the right.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <StudioBadge
-            tone={currentModelInfo?.ready ? "emerald" : "amber"}
-            label={currentModelInfo?.status_label || "Provider Standby"}
-          />
-        </div>
+        <StudioBadge
+          tone={currentModelInfo?.ready ? "emerald" : "neutral"}
+          label={currentModelInfo?.status_label || "Provider standby"}
+        />
       </div>
 
-      {/* Main 12-Col Bento Grid */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Left 8 Columns: Visual Brief Composer */}
-        <div className="lg:col-span-8 flex flex-col gap-6">
-          <StudioPanel
-            eyebrow="THEME & INSPIRATION SOURCE"
-            title="1. Creative Brief & Reference Mode"
-          >
-            <div className="flex flex-col gap-6">
-              {/* Theme Input + Quick Inspiration Chips */}
-              <div className="flex flex-col gap-2.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Set Theme / Subject *
-                  </label>
-                  <span className="font-mono-tech text-[10px] text-[#646b78]">
-                    Used for folder slug & metadata synthesis
-                  </span>
-                </div>
-                <input
-                  type="text"
-                  value={theme}
-                  onChange={(e) => {
-                    const nextVal = e.target.value
-                    setTheme(nextVal)
-                    if (!primaryTagManualRef.current) {
-                      setPrimaryTag(formatPicassyKeyword(nextVal))
-                    }
-                  }}
-                  placeholder="What theme are we exploring? (e.g., beautiful-image or Sympathy Messages)"
-                  className="min-h-[54px] w-full rounded-2xl bg-white/[0.035] px-4 text-base font-medium text-white placeholder:text-[#646b78] ring-1 ring-white/[0.1] outline-none focus:ring-2 focus:ring-white/30"
-                />
-
-                {/* 1-Click Sample Theme Inspiration Pills */}
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="mr-1 font-mono-tech text-[10px] uppercase tracking-wider text-[#646b78]">
-                    Try brief:
-                  </span>
-                  {THEME_INSPIRATIONS.map((sample) => (
-                    <button
-                      key={sample.theme}
-                      type="button"
-                      onClick={() => {
-                        setTheme(sample.theme)
-                        if (!primaryTagManualRef.current) {
-                          setPrimaryTag(formatPicassyKeyword(sample.theme))
-                        }
-                        setBasePrompt(sample.base)
-                        handleApplyPreset(sample.preset)
-                      }}
-                      className="rounded-full bg-white/[0.03] px-3 py-1 text-[11px] text-[#9ca3af] ring-1 ring-white/[0.06] transition-colors hover:bg-white/[0.08] hover:text-white cursor-pointer"
+      {/* 2-Column Neutral Workbench */}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
+        {/* LEFT COLUMN (7/12) */}
+        <div className="lg:col-span-7 flex flex-col gap-5">
+          <StudioPanel noPadding>
+            <div className="divide-y divide-[#2E2E2E]">
+              {/* Section 1: Theme & Taxonomy */}
+              <div className="p-4 sm:p-5 flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="studio-theme-input"
+                      className="text-xs font-semibold text-[#F5F5F5]"
                     >
-                      {sample.theme}
-                    </button>
-                  ))}
+                      Theme or subject *
+                    </label>
+                    <span className="font-mono-tech text-[11px] text-[#737373]">
+                      {filenameStyle === "picassy_slug"
+                        ? `${kwSlug}-1.${extPreview}`
+                        : `001_${kwSlug}.${extPreview}`}
+                    </span>
+                  </div>
+                  <input
+                    id="studio-theme-input"
+                    type="text"
+                    value={theme}
+                    onChange={(e) => {
+                      const nextVal = e.target.value
+                      setTheme(nextVal)
+                      if (!primaryTagManualRef.current) {
+                        setPrimaryTag(formatPicassyKeyword(nextVal))
+                      }
+                    }}
+                    placeholder="Enter theme or keyword (e.g., Charcoal Portrait Sketch or Sympathy Messages)"
+                    className="h-10 w-full rounded-md border border-[#383838] bg-[#262626] px-3.5 text-sm font-medium text-[#F5F5F5] placeholder:text-[#737373] outline-none transition-colors duration-150 focus:border-[#A3A3A3]"
+                  />
+
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <span className="text-[11px] text-[#737373] mr-0.5">Samples:</span>
+                    {THEME_INSPIRATIONS.map((sample) => (
+                      <button
+                        key={sample.theme}
+                        type="button"
+                        onClick={() => {
+                          setTheme(sample.theme)
+                          if (!primaryTagManualRef.current) {
+                            setPrimaryTag(formatPicassyKeyword(sample.theme))
+                          }
+                          setBasePrompt(sample.base)
+                          handleApplyPreset(sample.preset)
+                        }}
+                        className="rounded border border-[#2E2E2E] bg-[#171717] px-2.5 py-1 text-[11px] text-[#A3A3A3] transition-colors duration-150 hover:border-[#404040] hover:text-[#F5F5F5] cursor-pointer"
+                      >
+                        {sample.theme}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                {/* Picassy Primary Tag (Keyword), 1 Category & Filename Pattern */}
-                <div className="mt-2 grid grid-cols-1 gap-3 rounded-2xl bg-white/[0.02] p-4 ring-1 ring-white/[0.08] sm:grid-cols-12">
-                  <div className="sm:col-span-5 flex flex-col gap-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-[11px] font-medium uppercase tracking-wider text-amber-200/90">
-                        Tag chính (Primary Keyword) *
-                      </label>
-                      <span className="font-mono-tech text-[10px] text-[#9ca3af] truncate">
-                        {filenameStyle === "picassy_slug"
-                          ? `${slugifyKeywordPreview(primaryTag || theme)}-1`
-                          : `001_${slugifyKeywordPreview(theme || primaryTag)}`}
-                      </span>
-                    </div>
+                {/* Primary Keyword + Category + Filename Rule */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                  <div className="sm:col-span-5 flex flex-col gap-1">
+                    <label
+                      htmlFor="studio-primary-tag"
+                      className="text-xs font-medium text-[#A3A3A3]"
+                    >
+                      Tag chính (Primary keyword) *
+                    </label>
                     <input
+                      id="studio-primary-tag"
                       type="text"
                       value={primaryTag}
                       onChange={(e) => {
                         primaryTagManualRef.current = e.target.value.trim().length > 0
                         setPrimaryTag(e.target.value)
                       }}
-                      placeholder="Exact keyword (e.g., Sympathy Messages)"
-                      className="h-10 rounded-xl bg-black/30 px-3 text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.1] outline-none focus:ring-2 focus:ring-amber-400/40"
+                      placeholder="Title Case keyword"
+                      className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-xs sm:text-sm text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#A3A3A3]"
                     />
                   </div>
 
-                  <div className="sm:col-span-4 flex flex-col gap-1.5">
-                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#d1d5db]">
-                      Category (1 Category / Job)
+                  <div className="sm:col-span-4 flex flex-col gap-1">
+                    <label className="text-xs font-medium text-[#A3A3A3]">
+                      Category (1 per set)
                     </label>
                     <Select
-                      value={categoryOptions.includes(category) ? category : categoryOptions[0]}
+                      value={
+                        categoryOptions.includes(category) ? category : categoryOptions[0]
+                      }
                       onValueChange={(v) => v && setCategory(v)}
                     >
-                      <SelectTrigger className="h-10 rounded-xl bg-black/30 px-3 text-xs text-white ring-1 ring-white/[0.1]">
+                      <SelectTrigger className="h-9 text-xs sm:text-sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -685,839 +713,499 @@ export function CreateScreen({
                     </Select>
                   </div>
 
-                  <div className="sm:col-span-3 flex flex-col gap-1.5">
-                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#d1d5db]">
-                      Filename Rule
+                  <div className="sm:col-span-3 flex flex-col gap-1">
+                    <label className="text-xs font-medium text-[#A3A3A3]">
+                      Filename rule
                     </label>
                     <Select
                       value={filenameStyle}
                       onValueChange={(v) => v && setFilenameStyle(v as FilenameStyle)}
                     >
-                      <SelectTrigger className="h-10 rounded-xl bg-black/30 px-3 text-xs text-white ring-1 ring-white/[0.1]">
+                      <SelectTrigger className="h-9 text-xs sm:text-sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="picassy_slug">slug-1, 2...</SelectItem>
+                        <SelectItem value="picassy_slug">slug-1, 2…</SelectItem>
                         <SelectItem value="studio_seq">001_slug</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                 </div>
-              </div>
 
-              {/* Base Visual Direction */}
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium uppercase tracking-wider text-[#9ca3af]">
-                  Base Visual Direction (Optional)
-                </label>
-                <textarea
-                  rows={2}
-                  value={basePrompt}
-                  onChange={(e) => setBasePrompt(e.target.value)}
-                  placeholder="Describe focal objects, materials, or narrative details shared across every variation in the set..."
-                  className="w-full rounded-2xl bg-white/[0.03] p-4 text-sm text-white placeholder:text-[#646b78] ring-1 ring-white/[0.09] outline-none focus:ring-2 focus:ring-white/30"
-                />
-              </div>
-
-              {/* 3 Starting Modes */}
-              <div className="flex flex-col gap-2.5">
-                <label className="text-xs font-medium uppercase tracking-wider text-[#9ca3af]">
-                  Three Ways to Start
-                </label>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  {[
-                    {
-                      id: "prompt_only" as ReferenceMode,
-                      label: "Pure Prompt",
-                      badge: "Default",
-                      sub: "Generates diverse prompts around the theme independently of Pinterest or uploads.",
-                      icon: <Sparkle size={17} weight="light" />,
-                    },
-                    {
-                      id: "local_upload" as ReferenceMode,
-                      label: "User Reference Images",
-                      badge: "Local Files",
-                      sub: "Pair each turn with your own image; optionally cycle with forced axis shifts.",
-                      icon: <UploadSimple size={17} weight="light" />,
-                    },
-                    {
-                      id: "pinterest" as ReferenceMode,
-                      label: "Pinterest Discovery",
-                      badge: "Conditional",
-                      sub: "Search by keyword, Pin URL, or Board URL and pick candidate references.",
-                      icon: <Compass size={17} weight="light" />,
-                    },
-                  ].map((mode) => {
-                    const active = referenceMode === mode.id
-                    return (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        onClick={() => setReferenceMode(mode.id)}
-                        className={cn(
-                          "flex flex-col items-start justify-between rounded-2xl p-4 text-left ring-1 transition-all cursor-pointer",
-                          active
-                            ? "bg-white/[0.08] text-white ring-white/[0.24] shadow-[0_8px_28px_rgba(0,0,0,0.4)]"
-                            : "bg-white/[0.02] text-[#9ca3af] ring-white/[0.06] hover:bg-white/[0.04]"
-                        )}
-                      >
-                        <div className="flex w-full items-center justify-between">
-                          <span className="flex size-8 items-center justify-center rounded-xl bg-white/[0.06] text-[#f4f5f7]">
-                            {mode.icon}
-                          </span>
-                          <span
-                            className={cn(
-                              "rounded-full px-2 py-0.5 font-mono-tech text-[10px] uppercase tracking-wider",
-                              active
-                                ? "bg-emerald-500/20 text-emerald-300"
-                                : "bg-white/[0.04] text-[#646b78]"
-                            )}
-                          >
-                            {mode.badge}
-                          </span>
-                        </div>
-                        <div className="mt-3">
-                          <p className="text-sm font-semibold text-[#f4f5f7]">
-                            {mode.label}
-                          </p>
-                          <p className="mt-1 text-[11px] leading-relaxed text-[#9ca3af]">
-                            {mode.sub}
-                          </p>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* Conditional Reference Workspace */}
-              {referenceMode !== "prompt_only" && (
-                <div className="rounded-2xl bg-white/[0.02] p-5 ring-1 ring-white/[0.08] flex flex-col gap-4">
-                  {referenceMode === "local_upload" ? (
-                    <div
-                      onDragOver={(e) => {
-                        e.preventDefault()
-                        setDragActive(true)
-                      }}
-                      onDragLeave={() => setDragActive(false)}
-                      onDrop={handleDrop}
-                      className={cn(
-                        "flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed p-6 text-center transition-colors",
-                        dragActive
-                          ? "border-emerald-400 bg-emerald-500/[0.06]"
-                          : "border-white/[0.14] bg-white/[0.015]"
-                      )}
-                    >
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        multiple
-                        onChange={handleFileChange}
-                        className="hidden"
-                      />
-                      <span className="flex size-10 items-center justify-center rounded-2xl bg-white/[0.06] text-white">
-                        <UploadSimple size={20} weight="light" />
-                      </span>
-                      <div>
-                        <p className="text-sm font-medium text-white">
-                          Drag & drop reference images here, or browse from disk
-                        </p>
-                        <p className="mt-0.5 text-xs text-[#9ca3af]">
-                          Supports PNG, JPG, and WebP · Max 1 reference paired per generation turn
-                        </p>
-                      </div>
-                      <StudioButton
-                        variant="secondary"
-                        loading={uploading}
-                        onClick={() => fileInputRef.current?.click()}
-                        icon={<UploadSimple size={15} weight="light" />}
-                      >
-                        {uploading ? "Uploading…" : "Choose Reference Files"}
-                      </StudioButton>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-medium text-white">
-                            Pinterest Candidate Discovery
-                          </p>
-                          <p className="text-xs text-[#9ca3af]">
-                            Supports Search Keywords/Tags, Pin URLs (pinterest.com/pin/...), or Board URLs. Candidate images are never copied into your export folder.
-                          </p>
-                        </div>
-                        <span className="rounded-full bg-white/[0.05] px-2.5 py-1 font-mono-tech text-[10px] text-[#d1d5db]">
-                          {settings?.pinterest_access_token_configured
-                            ? "API v5 Token Connected"
-                            : "Candidate Preview Mode"}
-                        </span>
-                      </div>
-                      <div className="flex flex-col sm:flex-row gap-2.5">
-                        <input
-                          type="text"
-                          value={pinterestQuery}
-                          onChange={(e) => setPinterestQuery(e.target.value)}
-                          placeholder={
-                            theme
-                              ? `Keyword, Pin URL, or Board URL (defaults to "${theme}")`
-                              : "Enter keyword, Pin URL (https://www.pinterest.com/pin/...), or Board URL"
-                          }
-                          className="min-h-[44px] flex-1 rounded-full bg-white/[0.04] px-4 text-sm text-white placeholder:text-[#646b78] ring-1 ring-white/[0.09] outline-none focus:ring-2 focus:ring-white/30"
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          max={12}
-                          value={pinterestLimit}
-                          onChange={(e) =>
-                            setPinterestLimit(
-                              Math.max(1, Math.min(12, Number(e.target.value) || 6))
-                            )
-                          }
-                          aria-label="Candidate count"
-                          className="min-h-[44px] w-20 rounded-full bg-white/[0.04] px-3 text-center font-mono-tech text-sm text-white ring-1 ring-white/[0.09]"
-                        />
-                        <StudioButton
-                          variant="secondary"
-                          loading={discovering}
-                          onClick={handlePinterestDiscover}
-                          icon={<Compass size={15} weight="light" />}
-                        >
-                          {discovering ? "Discovering…" : "Fetch Candidates"}
-                        </StudioButton>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Reference Candidate Selection Grid */}
-                  {filteredRefs.length > 0 && (
-                    <div className="flex flex-col gap-3 pt-1">
-                      <div className="flex items-center justify-between text-xs text-[#9ca3af]">
-                        <span>
-                          Selected <strong>{selectedRefIds.length}</strong> of{" "}
-                          {filteredRefs.length} candidate(s) for pairing
-                        </span>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSelectedRefIds(filteredRefs.map((r) => r.id))
-                            }
-                            className="text-xs text-[#d1d5db] hover:text-white cursor-pointer"
-                          >
-                            Select all
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedRefIds([])}
-                            className="text-xs text-[#646b78] hover:text-white cursor-pointer"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6">
-                        {filteredRefs.map((ref, idx) => {
-                          const isSelected = selectedRefIds.includes(ref.id)
-                          const orderIdx = selectedRefIds.indexOf(ref.id)
-                          return (
-                            <div
-                              key={ref.id}
-                              className={cn(
-                                "group relative overflow-hidden rounded-2xl bg-black/40 ring-1 transition-all",
-                                isSelected
-                                  ? "ring-2 ring-emerald-400"
-                                  : "ring-white/[0.08] opacity-75 hover:opacity-100"
-                              )}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => toggleRefSelection(ref.id)}
-                                className="block aspect-square w-full overflow-hidden cursor-pointer"
-                              >
-                                <img
-                                  src={getReferenceImageUrl(ref.id)}
-                                  alt={ref.title}
-                                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                                />
-                              </button>
-                              <div className="flex items-center justify-between bg-[#090a0d]/95 px-2.5 py-1.5 text-[10px]">
-                                <span className="font-mono-tech text-[#d1d5db] truncate">
-                                  #{ref.id} · {ref.width}×{ref.height}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedRefIds((prev) =>
-                                      prev.filter((x) => x !== ref.id)
-                                    )
-                                    onDeleteReference(ref.id)
-                                  }}
-                                  aria-label={`Remove reference ${ref.id}`}
-                                  className="text-[#646b78] hover:text-rose-300 cursor-pointer"
-                                >
-                                  <Trash size={12} weight="light" />
-                                </button>
-                              </div>
-                              {isSelected && (
-                                <span className="pointer-events-none absolute top-2 left-2 flex h-5 items-center gap-1 rounded-full bg-emerald-500 px-2 font-mono-tech text-[10px] font-bold text-black">
-                                  <CheckCircle size={11} weight="bold" />
-                                  #{orderIdx + 1}
-                                </span>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-
-                      <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                        <div>
-                          <p className="text-xs font-medium text-white">
-                            Round-Robin Reference Cycling
-                          </p>
-                          <p className="text-[11px] text-[#9ca3af]">
-                            When target count ({targetCount}) exceeds selected references ({selectedRefIds.length}), cycle references and force variation axis rotation.
-                          </p>
-                        </div>
-                        <Switch
-                          checked={cycleReferences}
-                          onCheckedChange={setCycleReferences}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {referenceUnsupported && (
-                    <div className="rounded-xl bg-rose-500/10 p-3 text-xs text-rose-200 ring-1 ring-rose-400/30">
-                      Model <strong>{currentModelInfo?.label}</strong> does not support reference image inputs. Switch to a model with reference support or select Pure Prompt mode.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </StudioPanel>
-
-          {/* Card 2: Frame Geometry, Set Volume & Model */}
-          <StudioPanel
-            eyebrow="GEOMETRY, VOLUME & ENGINE"
-            title="2. Aspect Ratio, Set Size & Model"
-          >
-            <div className="flex flex-col gap-6">
-              {/* Visual Proportional Aspect Ratio Cards */}
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium uppercase tracking-wider text-[#9ca3af]">
-                  Aspect Ratio & Frame Geometry
-                </label>
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
-                  {supportedRatios.map((r) => {
-                    const meta = RATIO_META[r] || {
-                      label: r,
-                      res: "",
-                      wClass: "w-5",
-                      hClass: "h-5",
-                    }
-                    const active = aspectRatio === r
-                    return (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => setAspectRatio(r)}
-                        className={cn(
-                          "flex flex-col items-center justify-center gap-2 rounded-2xl p-3.5 ring-1 transition-all cursor-pointer",
-                          active
-                            ? "bg-white/[0.09] text-white ring-white/[0.28]"
-                            : "bg-white/[0.02] text-[#9ca3af] ring-white/[0.06] hover:bg-white/[0.05]"
-                        )}
-                      >
-                        <div className="flex h-8 items-center justify-center">
-                          <span
-                            className={cn(
-                              "rounded-[4px] border-[1.5px] transition-colors",
-                              meta.wClass,
-                              meta.hClass,
-                              active
-                                ? "border-emerald-300 bg-emerald-400/15"
-                                : "border-white/30 bg-white/[0.04]"
-                            )}
-                          />
-                        </div>
-                        <div className="text-center">
-                          <p className="font-mono-tech text-xs font-semibold text-[#f4f5f7]">
-                            {r} · {meta.label}
-                          </p>
-                          <p className="font-mono-tech text-[10px] text-[#646b78]">
-                            {meta.res}
-                          </p>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* Volume, Run Mode, Metadata Language, Model & Export Folder */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Batch Strategy
-                  </label>
-                  <div className="grid grid-cols-2 rounded-full bg-white/[0.03] p-1 ring-1 ring-white/[0.08]">
-                    <button
-                      type="button"
-                      onClick={() => setRunMode("fixed")}
-                      className={cn(
-                        "rounded-full py-1.5 text-xs font-medium transition-colors cursor-pointer",
-                        runMode === "fixed"
-                          ? "bg-[#f4f5f7] text-[#050505]"
-                          : "text-[#9ca3af] hover:text-white"
-                      )}
-                    >
-                      Fixed Set
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRunMode("continuous")}
-                      className={cn(
-                        "rounded-full py-1.5 text-xs font-medium transition-colors cursor-pointer",
-                        runMode === "continuous"
-                          ? "bg-[#f4f5f7] text-[#050505]"
-                          : "text-[#9ca3af] hover:text-white"
-                      )}
-                    >
-                      Continuous
-                    </button>
-                  </div>
-                </div>
-
-                {runMode === "fixed" ? (
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                      Target Set Size (Default 6)
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setTargetCount((c) => Math.max(1, c - 1))}
-                        className="flex size-10 items-center justify-center rounded-full bg-white/[0.04] text-white ring-1 ring-white/[0.08] hover:bg-white/[0.08] cursor-pointer"
-                      >
-                        −
-                      </button>
-                      <input
-                        type="number"
-                        min={1}
-                        max={1000}
-                        value={targetCount}
-                        onChange={(e) =>
-                          setTargetCount(
-                            Math.max(1, Math.min(1000, Number(e.target.value) || 6))
-                          )
-                        }
-                        className="h-10 flex-1 rounded-full bg-white/[0.04] text-center font-mono-tech text-sm font-semibold text-white ring-1 ring-white/[0.08]"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setTargetCount((c) => Math.min(1000, c + 1))}
-                        className="flex size-10 items-center justify-center rounded-full bg-white/[0.04] text-white ring-1 ring-white/[0.08] hover:bg-white/[0.08] cursor-pointer"
-                      >
-                        +
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-1 pt-0.5">
-                      {[6, 20, 50, 100, 300, 1000].map((quickN) => (
-                        <button
-                          key={quickN}
-                          type="button"
-                          onClick={() => setTargetCount(quickN)}
-                          className={cn(
-                            "rounded-full px-2 py-0.5 font-mono-tech text-[10px] ring-1 transition-all cursor-pointer",
-                            targetCount === quickN
-                              ? "bg-white text-[#050505] ring-white font-semibold"
-                              : "bg-white/[0.03] text-[#9ca3af] ring-white/[0.06] hover:text-white"
-                          )}
-                        >
-                          {quickN}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                      Wave Size / Session Cap
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="number"
-                        min={1}
-                        max={50}
-                        value={batchSize}
-                        onChange={(e) =>
-                          setBatchSize(
-                            Math.max(1, Math.min(50, Number(e.target.value) || 4))
-                          )
-                        }
-                        title="Images per wave (up to 50)"
-                        className="h-10 rounded-full bg-white/[0.04] px-3 text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                      />
-                      <input
-                        type="number"
-                        min={2}
-                        max={1000}
-                        value={sessionCap}
-                        onChange={(e) =>
-                          setSessionCap(
-                            Math.max(2, Math.min(1000, Number(e.target.value) || 20))
-                          )
-                        }
-                        title="Max session cap (up to 1,000)"
-                        className="h-10 rounded-full bg-white/[0.04] px-3 text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Title & Description Language
-                  </label>
-                  <Select
-                    value={metadataLanguage}
-                    onValueChange={(v) => v && setMetadataLanguage(v)}
+                {/* Shared Visual Direction */}
+                <div className="flex flex-col gap-1">
+                  <label
+                    htmlFor="studio-base-prompt"
+                    className="text-xs font-medium text-[#A3A3A3]"
                   >
-                    <SelectTrigger className="h-10 rounded-full bg-white/[0.04] px-4 text-xs text-white ring-1 ring-white/[0.08]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {metadataLanguages.map((lang) => (
-                        <SelectItem key={lang} value={lang}>
-                          {lang}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    Shared visual direction (optional)
+                  </label>
+                  <textarea
+                    id="studio-base-prompt"
+                    rows={2}
+                    value={basePrompt}
+                    onChange={(e) => setBasePrompt(e.target.value)}
+                    placeholder="Focal objects, textures, or medium details shared across every shot…"
+                    className="w-full rounded-md border border-[#2E2E2E] bg-[#262626] p-3 text-xs sm:text-sm text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#A3A3A3]"
+                  />
                 </div>
               </div>
 
-              {/* Export Image File Format Selector (Original / PNG / JPG / WebP) */}
-              <div className="rounded-2xl bg-white/[0.025] p-4 ring-1 ring-white/[0.08] flex flex-col gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-xs font-semibold text-white">
-                      Export Image Format (Loại ảnh xuất)
-                    </p>
-                    <p className="text-[11px] text-[#9ca3af]">
-                      Chọn định dạng ảnh lưu trên ổ đĩa cho bộ ảnh này (mặc định đồng bộ từ Settings).
-                    </p>
+              {/* Section 2: Inspiration Source & References */}
+              <div className="p-4 sm:p-5 flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-[#F5F5F5]">
+                      Source mode
+                    </span>
+                    <span className="text-xs text-[#737373]">
+                      {referenceMode === "prompt_only"
+                        ? "Text prompt only"
+                        : `${selectedRefIds.length} reference image(s) selected`}
+                    </span>
                   </div>
-                  <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 font-mono-tech text-[10px] font-semibold uppercase text-emerald-300 ring-1 ring-emerald-400/25">
-                    .{exportImageFormat === "original" ? "orig" : exportImageFormat}
-                  </span>
-                </div>
 
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                  {EXPORT_IMAGE_FORMAT_OPTIONS.filter((fmt) =>
-                    supportedImageFormats.includes(fmt.id)
-                  ).map((fmt) => {
-                    const active = exportImageFormat === fmt.id
-                    return (
-                      <button
-                        key={fmt.id}
-                        type="button"
-                        onClick={() => setExportImageFormat(fmt.id)}
-                        className={cn(
-                          "flex flex-col items-start gap-1 rounded-xl p-3 text-left ring-1 transition-all cursor-pointer",
-                          active
-                            ? "bg-emerald-400/12 text-white ring-emerald-400/45 shadow-sm"
-                            : "bg-white/[0.02] text-[#9ca3af] ring-white/[0.06] hover:bg-white/[0.05] hover:text-white"
-                        )}
-                      >
-                        <div className="flex w-full items-center justify-between gap-1.5">
-                          <span className="text-xs font-semibold text-white">
-                            {fmt.label}
-                          </span>
-                          <span
-                            className={cn(
-                              "rounded-full px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold",
-                              active
-                                ? "bg-emerald-400 text-[#050505]"
-                                : "bg-white/[0.06] text-[#9ca3af]"
-                            )}
-                          >
-                            {fmt.badge}
-                          </span>
-                        </div>
-                        <span className="text-[10px] leading-snug text-[#9ca3af]">
-                          {fmt.description}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* Post-Image Caption & Description Prompt + Export Mode Switch */}
-              <div className="rounded-2xl bg-amber-400/[0.04] p-4 ring-1 ring-amber-400/20 flex flex-col gap-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold text-white">
-                          Post-Image Picassy CSV Export (pin-import.csv)
-                        </p>
-                        <p className="text-[11px] text-[#9ca3af]">
-                          Xuất 1 file <code className="text-amber-300">pin-import.csv</code> chuẩn 8 cột (File name, Title Case không gạch, Description, Alt text, Category, Tag, Peak, Prompt) hoặc chỉ xuất ảnh.
-                        </p>
-                      </div>
-
-                      {/* 2-Way Switch: Xuất CSV | Không (Chỉ ảnh) */}
-                      <div className="flex items-center rounded-full bg-black/40 p-1 ring-1 ring-white/[0.1] shrink-0">
-                        {(
-                          [
-                            ["csv", "Xuất CSV (pin-import.csv)"],
-                            ["none", "Không (Chỉ ảnh)"],
-                          ] as const
-                        ).map(([mKey, mLabel]) => {
-                      const active = metadataExportMode === mKey
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {[
+                      {
+                        id: "prompt_only" as ReferenceMode,
+                        label: "Pure prompt",
+                        sub: "Text brief & variation axes only",
+                        icon: <Sparkle size={15} />,
+                      },
+                      {
+                        id: "local_upload" as ReferenceMode,
+                        label: "Reference upload",
+                        sub: "Pair your own PNG, JPG, or WebP files",
+                        icon: <UploadSimple size={15} />,
+                      },
+                      {
+                        id: "pinterest" as ReferenceMode,
+                        label: "Pinterest search",
+                        sub: "Fetch candidates from keyword or URL",
+                        icon: <Compass size={15} />,
+                      },
+                    ].map((mode) => {
+                      const active = referenceMode === mode.id
                       return (
                         <button
-                          key={mKey}
+                          key={mode.id}
                           type="button"
-                          onClick={() => setMetadataExportMode(mKey)}
+                          onClick={() => setReferenceMode(mode.id)}
                           className={cn(
-                            "rounded-full px-3 py-1.5 text-xs font-medium transition-all cursor-pointer",
+                            "flex items-start gap-2.5 rounded-md border p-3 text-left transition-colors duration-150 cursor-pointer",
                             active
-                              ? "bg-amber-400 text-[#050505] font-semibold shadow-sm"
-                              : "text-[#9ca3af] hover:text-white"
+                              ? "border-[#D4D4D4] bg-[#262626] text-[#F5F5F5]"
+                              : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5]"
                           )}
                         >
-                          {mLabel}
+                          <span
+                            className={cn(
+                              "mt-0.5 shrink-0",
+                              active ? "text-[#F5F5F5]" : "text-[#737373]"
+                            )}
+                          >
+                            {mode.icon}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-[#F5F5F5]">
+                              {mode.label}
+                            </p>
+                            <p className="mt-0.5 text-[11px] leading-snug text-[#A3A3A3]">
+                              {mode.sub}
+                            </p>
+                          </div>
                         </button>
                       )
                     })}
                   </div>
                 </div>
 
-                {metadataExportMode !== "none" ? (
-                  <div className="flex flex-col gap-3 border-t border-white/[0.06] pt-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <label className="text-[11px] font-medium uppercase tracking-wider text-amber-200/90">
-                        Prompt tạo Caption & Description sau mỗi ảnh
-                      </label>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {captionStylePresets.map((cp) => (
-                          <button
-                            key={cp.id}
-                            type="button"
-                            onClick={() => setCaptionPrompt(cp.prompt)}
-                            className="rounded-full bg-white/[0.05] px-2.5 py-0.5 text-[10px] text-[#d1d5db] ring-1 ring-white/[0.08] hover:bg-white/[0.12] hover:text-white cursor-pointer"
+                {referenceMode !== "prompt_only" && (
+                  <div className="flex flex-col gap-4 pt-1">
+                    {/* 3-Mode Reference Variation Strength */}
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="text-xs font-medium text-[#F5F5F5]">
+                          Độ bám ảnh mẫu (Reference variation mode)
+                        </label>
+                        <span className="font-mono-tech text-[11px] text-[#737373]">
+                          75–115 words target
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        {REFERENCE_STRENGTH_OPTIONS.map((opt) => {
+                          const active = referenceStrength === opt.id
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setReferenceStrength(opt.id)}
+                              className={cn(
+                                "flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors duration-150 cursor-pointer",
+                                active
+                                  ? "border-[#D4D4D4] bg-[#262626] text-[#F5F5F5]"
+                                  : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3] hover:border-[#404040]"
+                              )}
+                            >
+                              <div className="flex w-full items-center justify-between gap-1.5">
+                                <span className="text-xs font-semibold text-[#F5F5F5]">
+                                  {opt.label}
+                                </span>
+                                <span
+                                  className={cn(
+                                    "rounded px-1.5 py-0.5 font-mono-tech text-[10px]",
+                                    active
+                                      ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                                      : "bg-[#262626] text-[#737373]"
+                                  )}
+                                >
+                                  {opt.badge}
+                                </span>
+                              </div>
+                              <p className="text-[11px] leading-snug text-[#A3A3A3]">
+                                {opt.description}
+                              </p>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    {referenceMode === "local_upload" ? (
+                      <div
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          setDragActive(true)
+                        }}
+                        onDragLeave={() => setDragActive(false)}
+                        onDrop={handleDrop}
+                        className={cn(
+                          "flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed px-4 py-3.5 transition-colors duration-150",
+                          dragActive
+                            ? "border-[#FAFAFA] bg-[#262626]"
+                            : "border-[#404040] bg-[#171717]"
+                        )}
+                      >
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          multiple
+                          onChange={handleFileChange}
+                          className="hidden"
+                        />
+                        <div className="flex items-center gap-3">
+                          <span className="flex size-9 items-center justify-center rounded-md border border-[#2E2E2E] bg-[#262626] text-[#F5F5F5]">
+                            <UploadSimple size={18} />
+                          </span>
+                          <div>
+                            <p className="text-xs font-medium text-[#F5F5F5]">
+                              Drop reference images here or browse files
+                            </p>
+                            <p className="text-[11px] text-[#737373]">
+                              PNG, JPG, WebP — optimized automatically before upload
+                            </p>
+                          </div>
+                        </div>
+                        <StudioButton
+                          variant="secondary"
+                          loading={uploading}
+                          onClick={() => fileInputRef.current?.click()}
+                          icon={<UploadSimple size={14} />}
+                        >
+                          {uploading ? "Uploading…" : "Choose files"}
+                        </StudioButton>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2 rounded-md border border-[#2E2E2E] bg-[#171717] p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-[#F5F5F5]">
+                            Discover Pinterest candidates
+                          </span>
+                          <span className="font-mono-tech text-[10px] text-[#737373]">
+                            {settings?.pinterest_access_token_configured
+                              ? "API v5 token active"
+                              : "Candidate preview mode"}
+                          </span>
+                        </div>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            value={pinterestQuery}
+                            onChange={(e) => setPinterestQuery(e.target.value)}
+                            placeholder={
+                              theme
+                                ? `Keyword, Pin URL, or Board URL (defaults to "${theme}")`
+                                : "Keyword, Pin URL (pinterest.com/pin/…), or Board URL"
+                            }
+                            className="h-9 flex-1 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-xs text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#A3A3A3]"
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={12}
+                            value={pinterestLimit}
+                            onChange={(e) =>
+                              setPinterestLimit(
+                                Math.max(1, Math.min(12, Number(e.target.value) || 6))
+                              )
+                            }
+                            aria-label="Candidate count"
+                            className="h-9 w-18 rounded-md border border-[#2E2E2E] bg-[#262626] px-2.5 text-center font-mono-tech text-xs text-[#F5F5F5]"
+                          />
+                          <StudioButton
+                            variant="secondary"
+                            loading={discovering}
+                            onClick={handlePinterestDiscover}
+                            icon={<Compass size={14} />}
                           >
-                            {cp.label}
-                          </button>
-                        ))}
+                            {discovering ? "Fetching…" : "Fetch pins"}
+                          </StudioButton>
+                        </div>
                       </div>
-                    </div>
+                    )}
 
-                    <textarea
-                      rows={2}
-                      value={captionPrompt}
-                      onChange={(e) => setCaptionPrompt(e.target.value)}
-                      placeholder="Nhập prompt hướng dẫn AI viết Caption (Pin Title), Description chuẩn SEO và Hashtags sau khi tạo xong mỗi ảnh..."
-                      className="w-full rounded-xl bg-black/30 p-3 text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.09] outline-none focus:ring-2 focus:ring-amber-400/40"
-                    />
+                    {/* Reference Grid */}
+                    {filteredRefs.length > 0 && (
+                      <div className="flex flex-col gap-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#A3A3A3]">
+                          <span className="tabular-nums">
+                            Selected <strong className="text-[#F5F5F5]">{selectedRefIds.length}</strong> of{" "}
+                            <strong className="text-[#F5F5F5]">{filteredRefs.length}</strong> imported
+                          </span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedRefIds(filteredRefs.map((r) => r.id))
+                              }
+                              className="rounded border border-[#383838] bg-[#262626] px-2.5 py-1 text-[11px] text-[#F5F5F5] hover:border-[#525252] cursor-pointer"
+                            >
+                              Select all
+                            </button>
+                            {selectedRefIds.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedRefIds([])}
+                                className="rounded border border-[#2E2E2E] bg-[#171717] px-2.5 py-1 text-[11px] text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
+                              >
+                                Unselect
+                              </button>
+                            )}
+                            {selectedRefIds.length > 0 && (
+                              <button
+                                type="button"
+                                disabled={deletingRefBusy}
+                                onClick={async () => {
+                                  const idsToRemove = [...selectedRefIds]
+                                  setDeletingRefBusy(true)
+                                  try {
+                                    setSelectedRefIds([])
+                                    if (onBulkDeleteReferences) {
+                                      await onBulkDeleteReferences({
+                                        reference_ids: idsToRemove,
+                                      })
+                                    } else {
+                                      for (const rid of idsToRemove) {
+                                        await onDeleteReference(rid)
+                                      }
+                                    }
+                                  } finally {
+                                    setDeletingRefBusy(false)
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-[#EF4444]/35 bg-[#262626] px-2.5 py-1 text-[11px] font-medium text-[#FCA5A5] hover:bg-[#EF4444]/15 cursor-pointer"
+                              >
+                                <Trash size={12} />
+                                Delete selected ({selectedRefIds.length})
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={deletingRefBusy}
+                              onClick={async () => {
+                                setDeletingRefBusy(true)
+                                try {
+                                  setSelectedRefIds([])
+                                  if (onBulkDeleteReferences) {
+                                    await onBulkDeleteReferences({
+                                      source_type:
+                                        referenceMode === "pinterest"
+                                          ? "pinterest"
+                                          : "local_upload",
+                                    })
+                                  } else {
+                                    for (const r of filteredRefs) {
+                                      await onDeleteReference(r.id)
+                                    }
+                                  }
+                                } finally {
+                                  setDeletingRefBusy(false)
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 rounded border border-[#2E2E2E] bg-[#171717] px-2.5 py-1 text-[11px] text-[#A3A3A3] hover:border-[#EF4444]/35 hover:text-[#FCA5A5] cursor-pointer"
+                              title="Delete all imported reference images in this tab"
+                            >
+                              <Trash size={12} />
+                              Delete all ({filteredRefs.length})
+                            </button>
+                          </div>
+                        </div>
 
-                    <div className="flex items-center justify-between gap-4 pt-0.5">
-                      <div>
-                        <p className="text-xs font-medium text-white">
-                          Tạo Picassy Metadata bằng AI sau mỗi ảnh (Option 1A)
-                        </p>
-                        <p className="text-[11px] text-[#9ca3af]">
-                          Router hiện tại: <span className="text-sky-300 font-mono-tech">{settings?.metadata_provider || "auto"}</span>
-                          {settings?.metadata_provider === "browser_cdp"
-                            ? " — gửi Prompt #2 trên Chrome CDP (tốn thêm quota ảnh)."
-                            : " — dùng Small Vision/Text Model (512px) hoặc Grammatical Engine để giữ trọn 100% quota Chrome CDP cho Prompt #1 tạo ảnh."}
-                        </p>
+                        <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-5">
+                          {filteredRefs.map((ref) => {
+                            const isSelected = selectedRefIds.includes(ref.id)
+                            const orderIdx = selectedRefIds.indexOf(ref.id)
+                            return (
+                              <div
+                                key={ref.id}
+                                className={cn(
+                                  "group relative overflow-hidden rounded-md border bg-[#121212] transition-colors duration-150",
+                                  isSelected
+                                    ? "border-[#FAFAFA] ring-1 ring-[#FAFAFA]"
+                                    : "border-[#2E2E2E] opacity-85 hover:border-[#525252] hover:opacity-100"
+                                )}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => toggleRefSelection(ref.id)}
+                                  className="block aspect-square w-full overflow-hidden bg-[#121212] cursor-pointer"
+                                >
+                                  <img
+                                    src={getReferenceImageUrl(ref.id)}
+                                    alt={ref.title}
+                                    className="h-full w-full object-cover"
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={deletingRefBusy}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setSelectedRefIds((prev) =>
+                                      prev.filter((x) => x !== ref.id)
+                                    )
+                                    onDeleteReference(ref.id)
+                                  }}
+                                  aria-label={`Delete reference ${ref.id}`}
+                                  title={`Delete reference #${ref.id}`}
+                                  className="absolute top-1.5 right-1.5 z-10 flex size-6 shrink-0 items-center justify-center rounded border border-[#404040] bg-[#121212]/90 text-[#F5F5F5] transition-colors duration-150 hover:border-[#EF4444] hover:bg-[#EF4444] hover:text-white cursor-pointer"
+                                >
+                                  <Trash size={12} weight="bold" />
+                                </button>
+                                <div className="flex items-center justify-between border-t border-[#2E2E2E] bg-[#171717] px-2 py-1 font-mono-tech text-[10px] text-[#A3A3A3]">
+                                  <span className="truncate">
+                                    #{ref.id} · {ref.width}×{ref.height}
+                                  </span>
+                                </div>
+                                {isSelected && (
+                                  <span className="pointer-events-none absolute top-1.5 left-1.5 flex h-5 items-center gap-1 rounded bg-[#FAFAFA] px-1.5 font-mono-tech text-[10px] font-bold text-[#121212]">
+                                    <CheckCircle size={11} weight="bold" />#{orderIdx + 1}
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 rounded-md border border-[#2E2E2E] bg-[#171717] px-3.5 py-2.5">
+                          <div>
+                            <p className="text-xs font-medium text-[#F5F5F5]">
+                              Cycle references across shots
+                            </p>
+                            <p className="text-[11px] text-[#737373]">
+                              When target count ({targetCount}) exceeds selected references ({selectedRefIds.length}), rotate references with fresh axes.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={cycleReferences}
+                            onCheckedChange={setCycleReferences}
+                          />
+                        </div>
                       </div>
-                      <Switch
-                        checked={useAiCaptionPrompt}
-                        onCheckedChange={setUseAiCaptionPrompt}
-                      />
-                    </div>
+                    )}
+
+                    {referenceUnsupported && (
+                      <div className="rounded-md border border-[#EF4444]/35 bg-[#EF4444]/10 p-3 text-xs text-[#FCA5A5]">
+                        Model <strong>{currentModelInfo?.label}</strong> does not accept reference images. Choose a reference-capable model or switch to Pure prompt.
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <p className="border-t border-white/[0.06] pt-2.5 text-[11px] text-emerald-300">
-                    Chế độ Chỉ xuất ảnh: Bỏ qua bước tạo Caption/JSON sau mỗi ảnh để tối ưu tốc độ render nhanh nhất.
-                  </p>
                 )}
               </div>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Image Generation Model
-                  </label>
-                  <Select
-                    value={selectedModel}
-                    onValueChange={(v) => v && setSelectedModel(v)}
-                  >
-                    <SelectTrigger className="h-11 rounded-2xl bg-white/[0.04] px-4 text-xs text-white ring-1 ring-white/[0.08]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {providers.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>
-                          <span className="inline-flex items-center gap-2">
-                            <BrandIcon name={p.engine.replace("_api", "")} size={14} />
-                            <span>{p.label}</span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {currentModelInfo && (
-                    <span className="text-[11px] text-[#646b78]">
-                      {currentModelInfo.rate_limit_note}
-                    </span>
-                  )}
-                  {selectedModel.startsWith("chrome-cdp/") && (
-                    <div className="mt-1.5 flex items-center justify-between gap-2">
-                      <label className="text-[10px] font-mono-tech uppercase tracking-wider text-sky-300">
-                        Chrome CDP Slot
-                      </label>
-                      <Select
-                        value={String(preferredCdpSlot)}
-                        onValueChange={(v) => setPreferredCdpSlot(Number(v) || 0)}
-                      >
-                        <SelectTrigger className="h-8 w-52 rounded-xl bg-white/[0.04] px-2.5 text-[11px] text-white ring-1 ring-white/[0.08]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="0">Auto (Next Free Enabled Slot)</SelectItem>
-                          {(cdpSlots.length > 0
-                            ? cdpSlots
-                            : [{ slot_id: 1, port: 9222, label: "Slot 1", enabled: true, connected: false, open_engines: [] as string[], active_job_id: null, active_generation_id: null }]
-                          ).map((s) => (
-                            <SelectItem key={s.slot_id} value={String(s.slot_id)}>
-                              {`Slot #${s.slot_id} (:${s.port}) · ${s.enabled ? (s.connected ? "Online" : "Standby") : s.connected ? "Connected (Disabled)" : "Disabled"}`}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Export Folder Root (Save Location)
-                  </label>
+              {/* Section 3: Style Presets & Collapsible Variation Axes */}
+              <div className="p-4 sm:p-5 flex flex-col gap-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
                   <div className="flex items-center gap-2">
-                    <div className="relative flex flex-1 items-center">
-                      <FolderOpen
-                        size={15}
-                        weight="light"
-                        className="pointer-events-none absolute left-3.5 text-[#9ca3af]"
-                      />
-                      <input
-                        type="text"
-                        value={exportRootDir}
-                        onChange={(e) => setExportRootDir(e.target.value)}
-                        onBlur={() => {
-                          if (
-                            exportRootDir.trim() &&
-                            exportRootDir.trim() !== settings?.export_root_dir
-                          ) {
-                            onSaveExportRoot(exportRootDir.trim())
-                          }
-                        }}
-                        placeholder="Default: ./exports/<YYYY-MM-DD_HHMMSS_slug>/"
-                        className="h-11 w-full rounded-2xl bg-white/[0.04] pl-10 pr-4 font-mono-tech text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
-                      />
+                    <Sliders size={15} className="text-[#A3A3A3]" />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-[#F5F5F5]">
+                        Style preset &amp; variation axes
+                      </span>
+                      <span className="rounded border border-[#2E2E2E] bg-[#262626] px-2 py-0.5 text-[11px] text-[#A3A3A3]">
+                        {activePresetLabel}
+                      </span>
+                      {aiSuggestSource && (
+                        <span className="rounded border border-[#404040] bg-[#262626] px-2 py-0.5 text-[11px] text-[#F5F5F5]">
+                          {aiSuggestSource}
+                        </span>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const chosen = await onPickExportFolder()
-                        if (chosen) setExportRootDir(chosen)
-                      }}
-                      className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-2xl bg-white/[0.06] px-3.5 text-xs font-medium text-[#f4f5f7] ring-1 ring-white/[0.1] hover:bg-white/[0.12] cursor-pointer"
-                      title="Open macOS Finder to select export folder"
-                    >
-                      <FolderOpen size={15} weight="light" />
-                      Browse…
-                    </button>
                   </div>
-                </div>
-              </div>
 
-              {/* Continuity & Variation Axes Matrix */}
-              <div className="rounded-2xl bg-white/[0.02] p-4 ring-1 ring-white/[0.07]">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <Sliders size={16} weight="light" className="text-[#d1d5db]" />
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-xs font-medium text-white">
-                          Style Presets, Locked Continuity & Variation Axes
-                        </p>
-                        {aiSuggestSource && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2.5 py-0.5 font-mono-tech text-[10px] font-medium text-amber-300 ring-1 ring-amber-400/30">
-                            <Sparkle size={10} weight="fill" />
-                            AI Tailored · {aiSuggestSource}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-[#9ca3af]">
-                        Pick a preset, or click <strong>AI Suggest Axes</strong> when your theme doesn&apos;t fit standard presets.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => setShowImportDialog(true)}
-                      title="Copy Sample Master Prompt to external AI (ChatGPT/Gemini/Claude) and import/paste back JSON config"
-                      className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-3.5 py-1.5 text-[11px] font-semibold text-sky-200 ring-1 ring-sky-400/35 hover:bg-sky-500/25 cursor-pointer"
+                      title="Copy sample prompt and import JSON axes"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#383838] bg-[#262626] px-2.5 text-xs font-medium text-[#F5F5F5] hover:border-[#525252] cursor-pointer"
                     >
-                      <FileCode size={13} weight="fill" />
-                      Sample Prompt &amp; Import
+                      <FileCode size={13} className="text-[#A3A3A3]" />
+                      Sample &amp; JSON
                     </button>
                     <button
                       type="button"
                       disabled={suggestingAxes}
                       onClick={handleSuggestAxes}
-                      title="Use AI (API / Browser :9222 / Smart Domain Analyzer) to generate custom Locked Continuity & Variation Axes tailored to your Theme"
                       className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[11px] font-semibold transition-all cursor-pointer",
+                        "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors duration-150 cursor-pointer",
                         selectedPresetId === "ai_custom"
-                          ? "bg-amber-400 text-[#050505] shadow-[0_4px_14px_rgba(251,191,36,0.25)]"
-                          : "bg-amber-400/15 text-amber-200 ring-1 ring-amber-400/35 hover:bg-amber-400/25"
+                          ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                          : "border-[#383838] bg-[#262626] text-[#F5F5F5] hover:border-[#525252]"
                       )}
                     >
                       <MagicWand
                         size={13}
-                        weight="fill"
                         className={suggestingAxes ? "animate-spin" : ""}
                       />
-                      {suggestingAxes ? "AI Analyzing Theme…" : "AI Suggest Axes"}
+                      {suggestingAxes ? "Analyzing…" : "AI suggest"}
                     </button>
                     <button
                       type="button"
                       onClick={() => setShowAxesConfig((v) => !v)}
-                      className="rounded-full bg-white/[0.06] px-3.5 py-1.5 text-[11px] font-medium text-[#e5e7eb] hover:bg-white/[0.12] cursor-pointer"
+                      className="inline-flex h-8 items-center gap-1 rounded-md border border-[#2E2E2E] bg-[#171717] px-2.5 text-xs font-medium text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5] cursor-pointer"
                     >
-                      {showAxesConfig ? "Close Axis Editor" : "Toggle / Edit Axes"}
+                      <span>{showAxesConfig ? "Hide axes" : "Edit axes"}</span>
+                      <CaretDown
+                        size={12}
+                        className={cn(
+                          "transition-transform duration-150",
+                          showAxesConfig && "rotate-180"
+                        )}
+                      />
                     </button>
                   </div>
                 </div>
 
                 {suggestError && (
-                  <div className="mt-3 rounded-xl bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200 ring-1 ring-amber-400/30">
+                  <div className="rounded-md border border-[#EF4444]/35 bg-[#EF4444]/10 px-3 py-2 text-xs text-[#FCA5A5]">
                     {suggestError}
                   </div>
                 )}
 
-                {/* Preset Selector Strip */}
-                <div className="mt-3.5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {presets.map((p) => {
                     const isSelected = selectedPresetId === p.id
                     return (
@@ -1526,66 +1214,118 @@ export function CreateScreen({
                         type="button"
                         onClick={() => handleApplyPreset(p.id)}
                         className={cn(
-                          "flex flex-col items-start rounded-xl p-3 text-left ring-1 transition-all cursor-pointer",
+                          "flex flex-col items-start rounded-md border p-2.5 text-left transition-colors duration-150 cursor-pointer",
                           isSelected
-                            ? "bg-[#f4f5f7] text-[#050505] ring-white"
-                            : "bg-white/[0.03] text-[#9ca3af] ring-white/[0.06] hover:bg-white/[0.06] hover:text-white"
+                            ? "border-[#D4D4D4] bg-[#262626] text-[#F5F5F5]"
+                            : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5]"
                         )}
                       >
                         <span className="text-xs font-semibold">{p.label}</span>
-                        <span
-                          className={cn(
-                            "mt-0.5 line-clamp-2 text-[10px]",
-                            isSelected ? "text-[#050505]/75" : "text-[#646b78]"
-                          )}
-                        >
+                        <span className="mt-0.5 line-clamp-1 text-[10px] text-[#737373]">
                           {p.description}
                         </span>
                       </button>
                     )
                   })}
+                </div>
 
-                  {/* Dynamic AI Custom Card in Strip */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[#2E2E2E] bg-[#171717] px-3 py-2 text-xs">
+                  <div className="min-w-0 flex-1 truncate text-[#A3A3A3]">
+                    <span className="font-medium text-[#F5F5F5]">Style lock: </span>
+                    {fixedElements.style || "Adaptive high-resolution visual style"}
+                  </div>
                   <button
                     type="button"
-                    disabled={suggestingAxes}
-                    onClick={handleSuggestAxes}
-                    className={cn(
-                      "flex flex-col items-start justify-between rounded-xl p-3 text-left ring-1 transition-all cursor-pointer",
-                      selectedPresetId === "ai_custom"
-                        ? "bg-amber-400 text-[#050505] ring-amber-300 shadow-[0_6px_20px_rgba(251,191,36,0.2)]"
-                        : "bg-amber-400/[0.05] text-amber-200/90 ring-amber-400/25 hover:bg-amber-400/[0.12] hover:text-amber-100"
-                    )}
+                    onClick={() => setShowShotPreview((v) => !v)}
+                    className="shrink-0 text-[11px] font-medium text-[#F5F5F5] hover:underline cursor-pointer"
                   >
-                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
-                      <Sparkle size={13} weight="fill" />
-                      {selectedPresetId === "ai_custom"
-                        ? "AI Custom Tailored"
-                        : "Other Topic? AI Suggest"}
-                    </span>
-                    <span
-                      className={cn(
-                        "mt-0.5 line-clamp-2 text-[10px]",
-                        selectedPresetId === "ai_custom"
-                          ? "text-[#050505]/80"
-                          : "text-amber-200/65"
-                      )}
-                    >
-                      {aiSuggestSource
-                        ? `Generated via ${aiSuggestSource} for "${theme || "your theme"}"`
-                        : "Auto-synthesizes custom style, palette & 4 axes for any niche (3D, Anime, Food, Sci-Fi, etc.)"}
-                    </span>
+                    {showShotPreview ? "Hide preview" : "Preview 4 shots"}
                   </button>
                 </div>
 
+                {showShotPreview && (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {[0, 1, 2, 3].map((idx) => {
+                      const angle =
+                        parsedAngles[idx % Math.max(1, parsedAngles.length)] ||
+                        "Hero angle"
+                      const comp =
+                        parsedComps[(idx * 2 + 1) % Math.max(1, parsedComps.length)] ||
+                        "Rule of thirds"
+                      const light =
+                        parsedLighting[
+                          (idx * 3 + 2) % Math.max(1, parsedLighting.length)
+                        ] || "Natural light"
+                      const atmos =
+                        parsedAtmos[(idx * 5 + 3) % Math.max(1, parsedAtmos.length)] ||
+                        "Authentic ground"
+                      const customVal =
+                        parsedCustom[(idx * 7) % Math.max(1, parsedCustom.length)] || ""
+                      const pairedRefId =
+                        referenceMode !== "prompt_only" && selectedRefIds.length > 0
+                          ? cycleReferences || idx < selectedRefIds.length
+                            ? selectedRefIds[idx % selectedRefIds.length]
+                            : null
+                          : null
+
+                      return (
+                        <div
+                          key={idx}
+                          className="rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between font-mono-tech text-[11px]">
+                            <span className="font-semibold text-[#F5F5F5]">
+                              Shot #{String(idx + 1).padStart(2, "0")}
+                            </span>
+                            <span className="text-[#A3A3A3]">
+                              {pairedRefId ? `Ref #${pairedRefId}` : "Prompt"} ·{" "}
+                              {aspectRatio}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1 text-[11px] text-[#A3A3A3]">
+                            {(enabledAxes.camera_angles ?? true) && (
+                              <span className="truncate" title={angle}>
+                                • {angle}
+                              </span>
+                            )}
+                            {(enabledAxes.compositions ?? true) && (
+                              <span className="truncate" title={comp}>
+                                • {comp}
+                              </span>
+                            )}
+                            {(enabledAxes.lighting ?? true) && (
+                              <span className="truncate" title={light}>
+                                • {light}
+                              </span>
+                            )}
+                            {(enabledAxes.atmospheres ?? true) && (
+                              <span className="truncate" title={atmos}>
+                                • {atmos}
+                              </span>
+                            )}
+                            {(enabledAxes.custom_axis ?? false) && customVal && (
+                              <span
+                                className="col-span-2 truncate text-[#D4D4D4]"
+                                title={customVal}
+                              >
+                                • {customAxisLabel}: {customVal}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
                 {showAxesConfig && (
-                  <div className="mt-5 flex flex-col gap-5 border-t border-white/[0.06] pt-5">
+                  <div className="flex flex-col gap-4 border-t border-[#2E2E2E] pt-4">
                     <div>
-                      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-                        <p className="flex items-center gap-1.5 font-mono-tech text-[11px] uppercase tracking-wider text-[#d1d5db]">
-                          <LockKey size={13} weight="light" />
-                          Locked Continuity Elements (Consistent Across Entire Set)
-                        </p>
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#F5F5F5]">
+                          <LockKey size={13} className="text-[#A3A3A3]" />
+                          Locked continuity across set
+                        </span>
                         <button
                           type="button"
                           onClick={() =>
@@ -1596,240 +1336,250 @@ export function CreateScreen({
                               brand_mood: "",
                             })
                           }
-                          className="font-mono-tech text-[10px] text-[#9ca3af] hover:text-white cursor-pointer"
+                          className="text-xs text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
                         >
-                          Clear fixed overrides
+                          Clear overrides
                         </button>
                       </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div className={cn("flex flex-col gap-1 transition-opacity", !(enabledFixed.subject ?? true) && "opacity-45")}>
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-mono-tech uppercase text-[#646b78]">
-                              Subject / Framing Lock
-                            </span>
-                            <Switch
-                              checked={enabledFixed.subject ?? true}
-                              onCheckedChange={(v) => setEnabledFixed((ef) => ({ ...ef, subject: v }))}
-                            />
-                          </div>
-                          <input
-                            type="text"
-                            disabled={!(enabledFixed.subject ?? true)}
-                            value={fixedElements.subject || ""}
-                            onChange={(e) =>
-                              setFixedElements((f) => ({ ...f, subject: e.target.value }))
-                            }
-                            placeholder="Locked Subject / Front-Facing Rule"
-                            className="h-10 rounded-xl bg-white/[0.03] px-3.5 text-xs text-white ring-1 ring-white/[0.08]"
-                          />
-                        </div>
-                        <div className={cn("flex flex-col gap-1 transition-opacity", !(enabledFixed.style ?? true) && "opacity-45")}>
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-mono-tech uppercase text-[#646b78]">
-                              Visual Style / Medium / Lens
-                            </span>
-                            <Switch
-                              checked={enabledFixed.style ?? true}
-                              onCheckedChange={(v) => setEnabledFixed((ef) => ({ ...ef, style: v }))}
-                            />
-                          </div>
-                          <input
-                            type="text"
-                            disabled={!(enabledFixed.style ?? true)}
-                            value={fixedElements.style || ""}
-                            onChange={(e) =>
-                              setFixedElements((f) => ({ ...f, style: e.target.value }))
-                            }
-                            placeholder="Locked Visual Style / Lens / Medium"
-                            className="h-10 rounded-xl bg-white/[0.03] px-3.5 text-xs text-white ring-1 ring-white/[0.08]"
-                          />
-                        </div>
-                        <div className={cn("flex flex-col gap-1 transition-opacity", !(enabledFixed.color_palette ?? true) && "opacity-45")}>
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-mono-tech uppercase text-[#646b78]">
-                              Color Palette
-                            </span>
-                            <Switch
-                              checked={enabledFixed.color_palette ?? true}
-                              onCheckedChange={(v) => setEnabledFixed((ef) => ({ ...ef, color_palette: v }))}
-                            />
-                          </div>
-                          <input
-                            type="text"
-                            disabled={!(enabledFixed.color_palette ?? true)}
-                            value={fixedElements.color_palette || ""}
-                            onChange={(e) =>
-                              setFixedElements((f) => ({
-                                ...f,
-                                color_palette: e.target.value,
-                              }))
-                            }
-                            placeholder="Locked Brand / Color Palette"
-                            className="h-10 rounded-xl bg-white/[0.03] px-3.5 text-xs text-white ring-1 ring-white/[0.08]"
-                          />
-                        </div>
-                        <div className={cn("flex flex-col gap-1 transition-opacity", !(enabledFixed.brand_mood ?? true) && "opacity-45")}>
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-mono-tech uppercase text-[#646b78]">
-                              Brand Mood / Tone
-                            </span>
-                            <Switch
-                              checked={enabledFixed.brand_mood ?? true}
-                              onCheckedChange={(v) => setEnabledFixed((ef) => ({ ...ef, brand_mood: v }))}
-                            />
-                          </div>
-                          <input
-                            type="text"
-                            disabled={!(enabledFixed.brand_mood ?? true)}
-                            value={fixedElements.brand_mood || ""}
-                            onChange={(e) =>
-                              setFixedElements((f) => ({
-                                ...f,
-                                brand_mood: e.target.value,
-                              }))
-                            }
-                            placeholder="Locked Mood / Tone"
-                            className="h-10 rounded-xl bg-white/[0.03] px-3.5 text-xs text-white ring-1 ring-white/[0.08]"
-                          />
-                        </div>
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                        {(
+                          [
+                            ["subject", "Subject / framing lock", "Front-facing or focal lock"],
+                            ["style", "Visual style / medium", "Medium, lens, rendering style"],
+                            ["color_palette", "Color palette", "Shared tones & contrast"],
+                            ["brand_mood", "Mood & tone", "Editorial atmosphere"],
+                          ] as const
+                        ).map(([fKey, fLabel, fPlaceholder]) => {
+                          const isOn = enabledFixed[fKey] ?? true
+                          return (
+                            <div
+                              key={fKey}
+                              className={cn(
+                                "flex flex-col gap-1 transition-opacity",
+                                !isOn && "opacity-45"
+                              )}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-[#A3A3A3]">{fLabel}</span>
+                                <Switch
+                                  checked={isOn}
+                                  onCheckedChange={(v) =>
+                                    setEnabledFixed((ef) => ({ ...ef, [fKey]: v }))
+                                  }
+                                />
+                              </div>
+                              <input
+                                type="text"
+                                disabled={!isOn}
+                                value={fixedElements[fKey] || ""}
+                                onChange={(e) =>
+                                  setFixedElements((f) => ({
+                                    ...f,
+                                    [fKey]: e.target.value,
+                                  }))
+                                }
+                                placeholder={fPlaceholder}
+                                className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-xs text-[#F5F5F5]"
+                              />
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
 
                     <div>
-                      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-                        <p className="flex items-center gap-1.5 font-mono-tech text-[11px] uppercase tracking-wider text-[#d1d5db]">
-                          <ArrowsClockwise size={13} weight="light" />
-                          Modular Variation Axes (Toggle Any Axis ON/OFF per Theme)
-                        </p>
-                        <span className="font-mono-tech text-[10px] text-[#9ca3af]">
-                          Turn OFF Camera Angles for Wallpaper, Painting &amp; Front-Facing sets
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#F5F5F5]">
+                          <ArrowsClockwise size={13} className="text-[#A3A3A3]" />
+                          Rotated variation axes (1 option per line)
+                        </span>
+                        <span className="text-[11px] text-[#737373]">
+                          Disable Camera angles for flat-lay, wallpaper, or front-facing art
                         </span>
                       </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div className={cn("flex flex-col gap-1 rounded-2xl bg-white/[0.02] p-3 ring-1 ring-white/[0.06] transition-opacity", !(enabledAxes.camera_angles ?? true) && "opacity-50")}>
-                          <div className="flex items-center justify-between text-[11px] text-[#9ca3af]">
-                            <span className="inline-flex items-center gap-1.5 text-white">
-                              <Camera size={12} className="text-amber-300" /> Camera Angles
-                              <span className="font-mono-tech text-[10px] text-[#646b78]">({parsedAngles.length})</span>
+
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                        <div
+                          className={cn(
+                            "flex flex-col gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5",
+                            !(enabledAxes.camera_angles ?? true) && "opacity-50"
+                          )}
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="inline-flex items-center gap-1.5 font-medium text-[#F5F5F5]">
+                              <Camera size={13} className="text-[#A3A3A3]" /> Camera angles{" "}
+                              <span className="font-mono-tech text-[10px] text-[#737373]">
+                                ({parsedAngles.length})
+                              </span>
                             </span>
                             <Switch
                               checked={enabledAxes.camera_angles ?? true}
-                              onCheckedChange={(v) => setEnabledAxes((ea) => ({ ...ea, camera_angles: v }))}
+                              onCheckedChange={(v) =>
+                                setEnabledAxes((ea) => ({ ...ea, camera_angles: v }))
+                              }
                             />
                           </div>
                           <textarea
-                            rows={4}
+                            rows={3}
                             disabled={!(enabledAxes.camera_angles ?? true)}
                             value={axesText.camera_angles}
                             onChange={(e) =>
-                              setAxesText((a) => ({ ...a, camera_angles: e.target.value }))
+                              setAxesText((a) => ({
+                                ...a,
+                                camera_angles: e.target.value,
+                              }))
                             }
-                            placeholder="Disabled — camera perspective will NOT be rotated..."
-                            className="rounded-xl bg-black/30 p-2.5 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
+                            className="rounded border border-[#2E2E2E] bg-[#121212] p-2 font-mono-tech text-[11px] text-[#F5F5F5]"
                           />
                         </div>
-                        <div className={cn("flex flex-col gap-1 rounded-2xl bg-white/[0.02] p-3 ring-1 ring-white/[0.06] transition-opacity", !(enabledAxes.compositions ?? true) && "opacity-50")}>
-                          <div className="flex items-center justify-between text-[11px] text-[#9ca3af]">
-                            <span className="inline-flex items-center gap-1.5 text-white">
-                              <GridFour size={12} className="text-sky-300" /> Compositions
-                              <span className="font-mono-tech text-[10px] text-[#646b78]">({parsedComps.length})</span>
+
+                        <div
+                          className={cn(
+                            "flex flex-col gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5",
+                            !(enabledAxes.compositions ?? true) && "opacity-50"
+                          )}
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="inline-flex items-center gap-1.5 font-medium text-[#F5F5F5]">
+                              <GridFour size={13} className="text-[#A3A3A3]" /> Compositions{" "}
+                              <span className="font-mono-tech text-[10px] text-[#737373]">
+                                ({parsedComps.length})
+                              </span>
                             </span>
                             <Switch
                               checked={enabledAxes.compositions ?? true}
-                              onCheckedChange={(v) => setEnabledAxes((ea) => ({ ...ea, compositions: v }))}
+                              onCheckedChange={(v) =>
+                                setEnabledAxes((ea) => ({ ...ea, compositions: v }))
+                              }
                             />
                           </div>
                           <textarea
-                            rows={4}
+                            rows={3}
                             disabled={!(enabledAxes.compositions ?? true)}
                             value={axesText.compositions}
                             onChange={(e) =>
-                              setAxesText((a) => ({ ...a, compositions: e.target.value }))
+                              setAxesText((a) => ({
+                                ...a,
+                                compositions: e.target.value,
+                              }))
                             }
-                            className="rounded-xl bg-black/30 p-2.5 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
+                            className="rounded border border-[#2E2E2E] bg-[#121212] p-2 font-mono-tech text-[11px] text-[#F5F5F5]"
                           />
                         </div>
-                        <div className={cn("flex flex-col gap-1 rounded-2xl bg-white/[0.02] p-3 ring-1 ring-white/[0.06] transition-opacity", !(enabledAxes.lighting ?? true) && "opacity-50")}>
-                          <div className="flex items-center justify-between text-[11px] text-[#9ca3af]">
-                            <span className="inline-flex items-center gap-1.5 text-white">
-                              <SunDim size={12} className="text-amber-200" /> Lighting Setups
-                              <span className="font-mono-tech text-[10px] text-[#646b78]">({parsedLighting.length})</span>
+
+                        <div
+                          className={cn(
+                            "flex flex-col gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5",
+                            !(enabledAxes.lighting ?? true) && "opacity-50"
+                          )}
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="inline-flex items-center gap-1.5 font-medium text-[#F5F5F5]">
+                              <SunDim size={13} className="text-[#A3A3A3]" /> Lighting{" "}
+                              <span className="font-mono-tech text-[10px] text-[#737373]">
+                                ({parsedLighting.length})
+                              </span>
                             </span>
                             <Switch
                               checked={enabledAxes.lighting ?? true}
-                              onCheckedChange={(v) => setEnabledAxes((ea) => ({ ...ea, lighting: v }))}
+                              onCheckedChange={(v) =>
+                                setEnabledAxes((ea) => ({ ...ea, lighting: v }))
+                              }
                             />
                           </div>
                           <textarea
-                            rows={4}
+                            rows={3}
                             disabled={!(enabledAxes.lighting ?? true)}
                             value={axesText.lighting}
                             onChange={(e) =>
                               setAxesText((a) => ({ ...a, lighting: e.target.value }))
                             }
-                            className="rounded-xl bg-black/30 p-2.5 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
-                          />
-                        </div>
-                        <div className={cn("flex flex-col gap-1 rounded-2xl bg-white/[0.02] p-3 ring-1 ring-white/[0.06] transition-opacity", !(enabledAxes.atmospheres ?? true) && "opacity-50")}>
-                          <div className="flex items-center justify-between text-[11px] text-[#9ca3af]">
-                            <span className="inline-flex items-center gap-1.5 text-white">
-                              <Wind size={12} className="text-emerald-300" /> Settings &amp; Canvas Grounds
-                              <span className="font-mono-tech text-[10px] text-[#646b78]">({parsedAtmos.length})</span>
-                            </span>
-                            <Switch
-                              checked={enabledAxes.atmospheres ?? true}
-                              onCheckedChange={(v) => setEnabledAxes((ea) => ({ ...ea, atmospheres: v }))}
-                            />
-                          </div>
-                          <textarea
-                            rows={4}
-                            disabled={!(enabledAxes.atmospheres ?? true)}
-                            value={axesText.atmospheres}
-                            onChange={(e) =>
-                              setAxesText((a) => ({ ...a, atmospheres: e.target.value }))
-                            }
-                            className="rounded-xl bg-black/30 p-2.5 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
+                            className="rounded border border-[#2E2E2E] bg-[#121212] p-2 font-mono-tech text-[11px] text-[#F5F5F5]"
                           />
                         </div>
 
-                        {/* Optional 5th Flexible Custom Axis (Brushwork / Pose / Pattern / Styling) */}
-                        <div className={cn("sm:col-span-2 flex flex-col gap-2 rounded-2xl bg-white/[0.025] p-3 ring-1 ring-amber-400/20 transition-opacity", !(enabledAxes.custom_axis ?? false) && "opacity-60")}>
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-                              <SparkleIcon size={13} className="text-amber-300 shrink-0" />
-                              <input
-                                type="text"
-                                value={customAxisLabel}
-                                onChange={(e) => setCustomAxisLabel(e.target.value)}
-                                placeholder="5th Axis Name (e.g. Brushwork, Pose & Expression, Color Flow)"
-                                className="h-7 flex-1 rounded-lg bg-black/40 px-2.5 text-xs font-medium text-amber-200 ring-1 ring-white/[0.08] outline-none"
-                              />
-                              <span className="font-mono-tech text-[10px] text-[#646b78]">
-                                ({parsedCustom.length} options)
+                        <div
+                          className={cn(
+                            "flex flex-col gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5",
+                            !(enabledAxes.atmospheres ?? true) && "opacity-50"
+                          )}
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="inline-flex items-center gap-1.5 font-medium text-[#F5F5F5]">
+                              <Wind size={13} className="text-[#A3A3A3]" /> Grounds &amp; settings{" "}
+                              <span className="font-mono-tech text-[10px] text-[#737373]">
+                                ({parsedAtmos.length})
                               </span>
-                            </div>
+                            </span>
                             <Switch
-                              checked={enabledAxes.custom_axis ?? false}
-                              onCheckedChange={(v) => setEnabledAxes((ea) => ({ ...ea, custom_axis: v }))}
+                              checked={enabledAxes.atmospheres ?? true}
+                              onCheckedChange={(v) =>
+                                setEnabledAxes((ea) => ({ ...ea, atmospheres: v }))
+                              }
                             />
                           </div>
                           <textarea
                             rows={3}
+                            disabled={!(enabledAxes.atmospheres ?? true)}
+                            value={axesText.atmospheres}
+                            onChange={(e) =>
+                              setAxesText((a) => ({
+                                ...a,
+                                atmospheres: e.target.value,
+                              }))
+                            }
+                            className="rounded border border-[#2E2E2E] bg-[#121212] p-2 font-mono-tech text-[11px] text-[#F5F5F5]"
+                          />
+                        </div>
+
+                        <div
+                          className={cn(
+                            "sm:col-span-2 flex flex-col gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5",
+                            !(enabledAxes.custom_axis ?? false) && "opacity-55"
+                          )}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                              <Sparkle size={13} className="text-[#A3A3A3] shrink-0" />
+                              <input
+                                type="text"
+                                value={customAxisLabel}
+                                onChange={(e) => setCustomAxisLabel(e.target.value)}
+                                placeholder="5th axis name (e.g. Brushwork, Pose, Nail Shape)"
+                                className="h-7 flex-1 rounded border border-[#2E2E2E] bg-[#262626] px-2 text-xs font-medium text-[#F5F5F5] outline-none"
+                              />
+                              <span className="font-mono-tech text-[10px] text-[#737373]">
+                                ({parsedCustom.length})
+                              </span>
+                            </div>
+                            <Switch
+                              checked={enabledAxes.custom_axis ?? false}
+                              onCheckedChange={(v) =>
+                                setEnabledAxes((ea) => ({ ...ea, custom_axis: v }))
+                              }
+                            />
+                          </div>
+                          <textarea
+                            rows={2}
                             disabled={!(enabledAxes.custom_axis ?? false)}
                             value={axesText.custom_axis}
                             onChange={(e) =>
-                              setAxesText((a) => ({ ...a, custom_axis: e.target.value }))
+                              setAxesText((a) => ({
+                                ...a,
+                                custom_axis: e.target.value,
+                              }))
                             }
-                            placeholder="Optional 5th axis options (1 per line) — e.g. Willow charcoal strokes, Wet watercolor washes, Minimalist floating botanicals..."
-                            className="rounded-xl bg-black/30 p-2.5 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
+                            placeholder="Optional 5th axis variations (1 per line)…"
+                            className="rounded border border-[#2E2E2E] bg-[#121212] p-2 font-mono-tech text-[11px] text-[#F5F5F5]"
                           />
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                      <span className="text-xs text-[#9ca3af]">
-                        Optimize visual generation prompts in English while writing Title & Description in {metadataLanguage}
+                    <div className="flex items-center justify-between border-t border-[#2E2E2E] pt-3">
+                      <span className="text-xs text-[#A3A3A3]">
+                        Write visual prompts in English while generating metadata in{" "}
+                        {metadataLanguage}
                       </span>
                       <Switch
                         checked={optimizePromptEnglish}
@@ -1839,221 +1589,518 @@ export function CreateScreen({
                   </div>
                 )}
               </div>
-
-              {/* Action Bar */}
-              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-white/[0.06] pt-4">
-                <p className="text-xs text-[#9ca3af]">
-                  {runMode === "fixed"
-                    ? `Plans ${targetCount} distinct variations for inspection in Step 02 (Plan).`
-                    : `Plans waves of ${batchSize} variations up to a session cap of ${sessionCap}.`}
-                </p>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <StudioButton
-                    variant="secondary"
-                    disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
-                    loading={submitting}
-                    onClick={() => handleSubmit(true)}
-                    icon={<Play size={15} weight="fill" />}
-                  >
-                    Plan & Start Run
-                  </StudioButton>
-
-                  <StudioButton
-                    variant="primary"
-                    disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
-                    loading={submitting}
-                    onClick={() => handleSubmit(false)}
-                    icon={<ArrowRight size={16} weight="light" />}
-                  >
-                    Build Variation Plan
-                  </StudioButton>
-                </div>
-              </div>
             </div>
           </StudioPanel>
         </div>
 
-        {/* Right 4 Columns: Live Variation Matrix Preview & Recent Sets */}
-        <div className="lg:col-span-4 flex flex-col gap-6">
-          <StudioPanel
-            eyebrow="LIVE VARIATION MATRIX"
-            title="Shot Diversity Preview"
-          >
-            <div className="flex flex-col gap-4">
-              {/* Active Locked Continuity Summary Card */}
-              <div className="rounded-2xl bg-white/[0.03] p-3.5 ring-1 ring-white/[0.08] space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 font-mono-tech text-[10px] uppercase tracking-wider text-amber-300">
-                    <LockKey size={12} weight="fill" />
-                    Locked Continuity
+        {/* RIGHT STICKY COLUMN (5/12) */}
+        <div className="lg:col-span-5 lg:sticky lg:top-16 flex flex-col gap-5">
+          <StudioPanel noPadding>
+            <div className="divide-y divide-[#2E2E2E]">
+              {/* Geometry & Set Size */}
+              <div className="p-4 sm:p-5 flex flex-col gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-semibold text-[#F5F5F5]">
+                    Aspect ratio
                   </span>
-                  <span className="rounded-full bg-white/[0.06] px-2 py-0.5 font-mono-tech text-[10px] text-[#d1d5db]">
-                    {selectedPresetId === "ai_custom"
-                      ? "AI Custom"
-                      : presets.find((p) => p.id === selectedPresetId)?.label || "Preset"}
-                  </span>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {supportedRatios.map((r) => {
+                      const meta = RATIO_META[r] || {
+                        label: r,
+                        res: "",
+                        wClass: "w-4",
+                        hClass: "h-4",
+                      }
+                      const active = aspectRatio === r
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setAspectRatio(r)}
+                          className={cn(
+                            "flex flex-col items-center justify-center gap-1.5 rounded-md border py-2 px-1.5 transition-colors duration-150 cursor-pointer",
+                            active
+                              ? "border-[#FAFAFA] bg-[#262626] text-[#F5F5F5]"
+                              : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5]"
+                          )}
+                        >
+                          <div className="flex h-6 items-center justify-center">
+                            <span
+                              className={cn(
+                                "rounded-[2px] border-[1.5px]",
+                                meta.wClass,
+                                meta.hClass,
+                                active
+                                  ? "border-[#FAFAFA] bg-[#FAFAFA]/15"
+                                  : "border-[#737373] bg-transparent"
+                              )}
+                            />
+                          </div>
+                          <div className="text-center leading-tight">
+                            <p className="font-mono-tech text-[11px] font-semibold">
+                              {r}
+                            </p>
+                            <p className="text-[10px] text-[#737373]">{meta.label}</p>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-                <p className="text-xs font-medium text-white line-clamp-2">
-                  {fixedElements.style || "Adaptive high-resolution visual style"}
-                </p>
-                {fixedElements.color_palette && (
-                  <p className="text-[11px] text-[#9ca3af] line-clamp-1">
-                    Palette: <span className="text-[#d1d5db]">{fixedElements.color_palette}</span>
-                  </p>
-                )}
-              </div>
 
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-[#9ca3af]">
-                  Rotated axes preview across first 4 shots:
-                </p>
-                <span className="font-mono-tech text-[10px] text-emerald-300">
-                  {runMode === "fixed" ? `${targetCount} shots total` : `${batchSize}/wave`}
-                </span>
-              </div>
+                {/* Batch Mode & Count */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                  <div className="sm:col-span-5 flex flex-col gap-1">
+                    <label className="text-xs font-medium text-[#A3A3A3]">
+                      Batch mode
+                    </label>
+                    <div className="grid grid-cols-2 rounded-md border border-[#2E2E2E] bg-[#171717] p-0.5 h-9">
+                      <button
+                        type="button"
+                        onClick={() => setRunMode("fixed")}
+                        className={cn(
+                          "rounded text-xs font-medium transition-colors duration-150 cursor-pointer",
+                          runMode === "fixed"
+                            ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                            : "text-[#737373] hover:text-[#F5F5F5]"
+                        )}
+                      >
+                        Fixed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRunMode("continuous")}
+                        className={cn(
+                          "rounded text-xs font-medium transition-colors duration-150 cursor-pointer",
+                          runMode === "continuous"
+                            ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                            : "text-[#737373] hover:text-[#F5F5F5]"
+                        )}
+                      >
+                        Waves
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="flex flex-col gap-2.5">
-                {[0, 1, 2, 3].map((idx) => {
-                  const angle = parsedAngles[idx % Math.max(1, parsedAngles.length)] || "Hero angle"
-                  const comp = parsedComps[(idx * 2 + 1) % Math.max(1, parsedComps.length)] || "Rule of thirds"
-                  const light = parsedLighting[(idx * 3 + 2) % Math.max(1, parsedLighting.length)] || "Natural light"
-                  const atmos = parsedAtmos[(idx * 5 + 3) % Math.max(1, parsedAtmos.length)] || "Authentic setting"
-                  const customVal = parsedCustom[(idx * 7) % Math.max(1, parsedCustom.length)] || ""
-                  const pairedRefId =
-                    referenceMode !== "prompt_only" && selectedRefIds.length > 0
-                      ? cycleReferences || idx < selectedRefIds.length
-                        ? selectedRefIds[idx % selectedRefIds.length]
-                        : null
-                      : null
-
-                  return (
-                    <div
-                      key={idx}
-                      className="rounded-2xl bg-white/[0.025] p-3 ring-1 ring-white/[0.06] hover:ring-white/[0.12] transition-all space-y-2"
-                    >
+                  {runMode === "fixed" ? (
+                    <div className="sm:col-span-7 flex flex-col gap-1">
                       <div className="flex items-center justify-between">
-                        <span className="inline-flex items-center gap-1.5 font-mono-tech text-[11px] font-semibold text-white">
-                          <span className="flex size-5 items-center justify-center rounded-full bg-white/[0.08] text-[10px]">
-                            {idx + 1}
-                          </span>
-                          Shot #{String(idx + 1).padStart(3, "0")}
-                        </span>
-                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono-tech text-[10px] text-emerald-300 ring-1 ring-emerald-400/20">
-                          {pairedRefId ? `Ref #${pairedRefId}` : "Pure Prompt"} · {aspectRatio}
-                        </span>
+                        <label className="text-xs font-medium text-[#A3A3A3]">
+                          Set size
+                        </label>
+                        <div className="flex items-center gap-1">
+                          {[6, 20, 50, 100].map((quickN) => (
+                            <button
+                              key={quickN}
+                              type="button"
+                              onClick={() => setTargetCount(quickN)}
+                              className={cn(
+                                "rounded px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer",
+                                targetCount === quickN
+                                  ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                                  : "bg-[#262626] text-[#A3A3A3] hover:text-[#F5F5F5]"
+                              )}
+                            >
+                              {quickN}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div className="grid grid-cols-2 gap-1.5 text-[10px] text-[#9ca3af]">
-                        {(enabledAxes.camera_angles ?? true) && (
-                          <span className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.02] px-2 py-1 truncate ring-1 ring-white/[0.04]" title={angle}>
-                            <Camera size={11} className="shrink-0 text-amber-300/90" />
-                            <span className="truncate">{angle}</span>
-                          </span>
-                        )}
-                        {(enabledAxes.compositions ?? true) && (
-                          <span className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.02] px-2 py-1 truncate ring-1 ring-white/[0.04]" title={comp}>
-                            <GridFour size={11} className="shrink-0 text-sky-300/90" />
-                            <span className="truncate">{comp}</span>
-                          </span>
-                        )}
-                        {(enabledAxes.lighting ?? true) && (
-                          <span className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.02] px-2 py-1 truncate ring-1 ring-white/[0.04]" title={light}>
-                            <SunDim size={11} className="shrink-0 text-amber-200/90" />
-                            <span className="truncate">{light}</span>
-                          </span>
-                        )}
-                        {(enabledAxes.atmospheres ?? true) && (
-                          <span className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.02] px-2 py-1 truncate ring-1 ring-white/[0.04]" title={atmos}>
-                            <Wind size={11} className="shrink-0 text-emerald-300/90" />
-                            <span className="truncate">{atmos}</span>
-                          </span>
-                        )}
-                        {(enabledAxes.custom_axis ?? false) && customVal && (
-                          <span className="col-span-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-400/[0.05] px-2 py-1 truncate text-amber-200/90 ring-1 ring-amber-400/20" title={customVal}>
-                            <SparkleIcon size={11} className="shrink-0 text-amber-300" />
-                            <span className="truncate">{customAxisLabel}: {customVal}</span>
-                          </span>
-                        )}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setTargetCount((c) => Math.max(1, c - 1))}
+                          className="flex size-9 items-center justify-center rounded-md border border-[#2E2E2E] bg-[#262626] text-[#F5F5F5] hover:border-[#404040] cursor-pointer"
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={1000}
+                          value={targetCount}
+                          onChange={(e) =>
+                            setTargetCount(
+                              Math.max(1, Math.min(1000, Number(e.target.value) || 6))
+                            )
+                          }
+                          className="h-9 flex-1 rounded-md border border-[#2E2E2E] bg-[#262626] text-center font-mono-tech text-sm font-semibold text-[#F5F5F5]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setTargetCount((c) => Math.min(1000, c + 1))}
+                          className="flex size-9 items-center justify-center rounded-md border border-[#2E2E2E] bg-[#262626] text-[#F5F5F5] hover:border-[#404040] cursor-pointer"
+                        >
+                          +
+                        </button>
                       </div>
                     </div>
-                  )
-                })}
+                  ) : (
+                    <div className="sm:col-span-7 flex flex-col gap-1">
+                      <label className="text-xs font-medium text-[#A3A3A3]">
+                        Per wave / session cap
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <input
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={batchSize}
+                          onChange={(e) =>
+                            setBatchSize(
+                              Math.max(1, Math.min(50, Number(e.target.value) || 4))
+                            )
+                          }
+                          title="Images per wave"
+                          className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-2.5 text-center font-mono-tech text-xs text-[#F5F5F5]"
+                        />
+                        <input
+                          type="number"
+                          min={2}
+                          max={1000}
+                          value={sessionCap}
+                          onChange={(e) =>
+                            setSessionCap(
+                              Math.max(2, Math.min(1000, Number(e.target.value) || 20))
+                            )
+                          }
+                          title="Session cap"
+                          className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-2.5 text-center font-mono-tech text-xs text-[#F5F5F5]"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Export Contract Summary */}
-              {(() => {
-                const kwSlug = slugifyKeywordPreview(primaryTag || theme)
-                const cleanTitleKw =
-                  formatPicassyKeyword(primaryTag || theme) || "Beautiful Image"
-                const ext = exportImageFormat === "original" ? "orig" : exportImageFormat
-                const f1 = filenameStyle === "studio_seq" ? `001_${kwSlug}` : `${kwSlug}-1`
-                const f2 = filenameStyle === "studio_seq" ? `002_${kwSlug}` : `${kwSlug}-2`
-                return (
-                  <div className="rounded-2xl bg-black/40 p-3.5 ring-1 ring-white/[0.06] font-mono-tech text-[11px] text-[#9ca3af] space-y-1">
-                    <p className="text-[#e5e7eb] font-medium">
-                      exports/YYYY-MM-DD_HHMMSS_{kwSlug.slice(0, 20)}/
+              {/* Engine, Chrome Slot & Format */}
+              <div className="p-4 sm:p-5 flex flex-col gap-3.5">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+                  <div className="sm:col-span-7 flex flex-col gap-1">
+                    <label className="text-xs font-medium text-[#A3A3A3]">
+                      Generation model
+                    </label>
+                    <Select
+                      value={selectedModel}
+                      onValueChange={(v) => v && setSelectedModel(v)}
+                    >
+                      <SelectTrigger className="h-9 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {providers.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            <span className="inline-flex items-center gap-2">
+                              <BrandIcon
+                                name={p.engine.replace("_api", "")}
+                                size={14}
+                              />
+                              <span>{p.label}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="sm:col-span-5 flex flex-col gap-1">
+                    <label className="text-xs font-medium text-[#A3A3A3]">
+                      Metadata language
+                    </label>
+                    <Select
+                      value={metadataLanguage}
+                      onValueChange={(v) => v && setMetadataLanguage(v)}
+                    >
+                      <SelectTrigger className="h-9 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {metadataLanguages.map((lang) => (
+                          <SelectItem key={lang} value={lang}>
+                            {lang}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {selectedModel.startsWith("chrome-cdp/") && (
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-[#A3A3A3]">
+                      Chrome CDP slot
+                    </label>
+                    <Select
+                      value={String(preferredCdpSlot)}
+                      onValueChange={(v) => setPreferredCdpSlot(Number(v) || 0)}
+                    >
+                      <SelectTrigger className="h-8 w-56 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">Auto (next free slot)</SelectItem>
+                        {(cdpSlots.length > 0
+                          ? cdpSlots
+                          : [
+                              {
+                                slot_id: 1,
+                                port: 9222,
+                                label: "Slot 1",
+                                enabled: true,
+                                connected: false,
+                                open_engines: [] as string[],
+                                active_job_id: null,
+                                active_generation_id: null,
+                              },
+                            ]
+                        ).map((s) => (
+                          <SelectItem key={s.slot_id} value={String(s.slot_id)}>
+                            {`Slot #${s.slot_id} (:${s.port}) — ${
+                              s.enabled
+                                ? s.connected
+                                  ? "Online"
+                                  : "Standby"
+                                : s.connected
+                                  ? "Paused"
+                                  : "Off"
+                            }`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-[#A3A3A3]">
+                      Image format
+                    </span>
+                    <span className="font-mono-tech text-[11px] text-[#A3A3A3]">
+                      .{extPreview}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {EXPORT_IMAGE_FORMAT_OPTIONS.filter((fmt) =>
+                      supportedImageFormats.includes(fmt.id)
+                    ).map((fmt) => {
+                      const active = exportImageFormat === fmt.id
+                      return (
+                        <button
+                          key={fmt.id}
+                          type="button"
+                          onClick={() => setExportImageFormat(fmt.id)}
+                          title={fmt.description}
+                          className={cn(
+                            "rounded-md border py-1.5 px-2 text-center text-xs font-medium transition-colors duration-150 cursor-pointer",
+                            active
+                              ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                              : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5]"
+                          )}
+                        >
+                          {fmt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* CSV Mode + Folder + Live Contract */}
+              <div className="p-4 sm:p-5 flex flex-col gap-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold text-[#F5F5F5]">
+                      Picassy export mode
                     </p>
-                    <p className="pl-2 text-[10px] text-amber-200/80">
-                      Title Prefix &amp; Tag: &quot;{cleanTitleKw}&quot; · Category: {category}
+                    <p className="text-[11px] text-[#737373]">
+                      {metadataExportMode === "csv"
+                        ? "Writes 8-column pin-import.csv alongside images"
+                        : "Images only — skips metadata generation"}
                     </p>
-                    {metadataExportMode === "csv" ? (
-                      <>
-                        <p className="pl-2 text-[#d1d5db]">
-                          ├── {f1}.{ext}
+                  </div>
+                  <div className="flex items-center rounded-md border border-[#2E2E2E] bg-[#171717] p-0.5 shrink-0">
+                    {(
+                      [
+                        ["csv", "CSV + images"],
+                        ["none", "Images only"],
+                      ] as const
+                    ).map(([mKey, mLabel]) => {
+                      const active = metadataExportMode === mKey
+                      return (
+                        <button
+                          key={mKey}
+                          type="button"
+                          onClick={() => setMetadataExportMode(mKey)}
+                          className={cn(
+                            "rounded px-2.5 py-1 text-xs font-medium transition-colors duration-150 cursor-pointer",
+                            active
+                              ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                              : "text-[#A3A3A3] hover:text-[#F5F5F5]"
+                          )}
+                        >
+                          {mLabel}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {metadataExportMode !== "none" && (
+                  <div className="rounded-md border border-[#2E2E2E] bg-[#171717] p-3 flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-[#F5F5F5]">
+                          AI metadata router ({settings?.metadata_provider || "auto"})
                         </p>
-                        <p className="pl-2 text-[#d1d5db]">
-                          ├── {f2}.{ext}
+                        <p className="text-[11px] text-[#737373]">
+                          Sentence-case description &amp; alt text, Title-Case Title
                         </p>
-                        <p className="pl-2 text-amber-300">
-                          └── pin-import.csv (8 cols · Peak + Prompt)
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="pl-2 text-emerald-300/80">
-                          ├── {f1}.{ext} (Image only)
-                        </p>
-                        <p className="pl-2 text-emerald-300/80">
-                          └── {f2}.{ext} (Max speed)
-                        </p>
-                      </>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowCaptionEditor((v) => !v)}
+                          className="text-[11px] font-medium text-[#F5F5F5] hover:underline cursor-pointer"
+                        >
+                          {showCaptionEditor ? "Hide prompt" : "SEO prompt"}
+                        </button>
+                        <Switch
+                          checked={useAiCaptionPrompt}
+                          onCheckedChange={setUseAiCaptionPrompt}
+                        />
+                      </div>
+                    </div>
+
+                    {showCaptionEditor && (
+                      <div className="flex flex-col gap-2 border-t border-[#2E2E2E] pt-2.5">
+                        <div className="flex flex-wrap items-center gap-1">
+                          {captionStylePresets.map((cp) => (
+                            <button
+                              key={cp.id}
+                              type="button"
+                              onClick={() => setCaptionPrompt(cp.prompt)}
+                              className="rounded border border-[#2E2E2E] bg-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
+                            >
+                              {cp.label}
+                            </button>
+                          ))}
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={captionPrompt}
+                          onChange={(e) => setCaptionPrompt(e.target.value)}
+                          className="w-full rounded border border-[#2E2E2E] bg-[#121212] p-2 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
+                        />
+                      </div>
                     )}
                   </div>
-                )
-              })()}
+                )}
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Export root folder
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={exportRootDir}
+                      onChange={(e) => setExportRootDir(e.target.value)}
+                      onBlur={() => {
+                        if (
+                          exportRootDir.trim() &&
+                          exportRootDir.trim() !== settings?.export_root_dir
+                        ) {
+                          onSaveExportRoot(exportRootDir.trim())
+                        }
+                      }}
+                      placeholder="./exports/<YYYY-MM-DD_HHMMSS_slug>/"
+                      className="h-9 flex-1 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#A3A3A3]"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const chosen = await onPickExportFolder()
+                        if (chosen) setExportRootDir(chosen)
+                      }}
+                      className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-[#383838] bg-[#262626] px-3 text-xs font-medium text-[#F5F5F5] hover:border-[#525252] cursor-pointer"
+                      title="Select export root folder in Finder"
+                    >
+                      <FolderOpen size={14} />
+                      Browse…
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-[#2E2E2E] bg-[#121212] px-3 py-2.5 font-mono-tech text-[11px] text-[#A3A3A3] space-y-0.5">
+                  <div className="flex items-center justify-between text-[#F5F5F5]">
+                    <span className="truncate">
+                      exports/…_{kwSlug.slice(0, 18)}/
+                    </span>
+                    <span className="text-[10px] text-[#A3A3A3]">{category}</span>
+                  </div>
+                  <p className="text-[10px] text-[#737373] truncate">
+                    Tag: &quot;{cleanTitleKw}&quot; · {sampleFile1}.{extPreview},{" "}
+                    {sampleFile2}.{extPreview}
+                    {metadataExportMode === "csv" ? " + pin-import.csv" : ""}
+                  </p>
+                </div>
+              </div>
+
+              {/* Primary White Button & Secondary Button */}
+              <div className="p-4 sm:p-5 flex flex-col gap-2.5 bg-[#191919]">
+                <StudioButton
+                  variant="primary"
+                  disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                  loading={submitting}
+                  onClick={() => handleSubmit(true)}
+                  icon={<Play size={14} weight="fill" />}
+                  className="h-10 w-full text-xs sm:text-sm"
+                >
+                  Plan &amp; start run (
+                  {runMode === "fixed" ? `${targetCount} shots` : `${batchSize}/wave`})
+                </StudioButton>
+
+                <StudioButton
+                  variant="secondary"
+                  disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                  loading={submitting}
+                  onClick={() => handleSubmit(false)}
+                  icon={<ListChecks size={14} />}
+                  className="h-9 w-full"
+                >
+                  Review variation plan first
+                </StudioButton>
+              </div>
             </div>
           </StudioPanel>
 
-          <StudioPanel
-            eyebrow="WORKSPACE ARCHIVE"
-            title="Recent Image Sets"
-          >
-            {recentJobs.length === 0 ? (
-              <p className="text-xs text-[#646b78]">
-                No image sets created yet. Enter a theme or click one of the sample briefs on the left to start.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {recentJobs.slice(0, 6).map((job) => (
+          {recentJobs.length > 0 && (
+            <StudioPanel title="Recent sets">
+              <div className="flex flex-col divide-y divide-[#2E2E2E] -my-2">
+                {recentJobs.slice(0, 4).map((job) => (
                   <div
                     key={job.id}
-                    className="flex items-center justify-between gap-3 rounded-2xl bg-white/[0.025] p-3.5 ring-1 ring-white/[0.06] hover:bg-white/[0.05]"
+                    className="flex items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-[#f4f5f7]">
+                      <p className="truncate text-xs font-semibold text-[#F5F5F5]">
+                        <span className="mr-1 font-mono-tech text-[#737373]">
+                          #{job.id}
+                        </span>
                         {job.theme}
                       </p>
-                      <p className="mt-0.5 font-mono-tech text-[11px] text-[#9ca3af]">
-                        #{job.id} · {job.counts.completed}/{job.counts.total} done · {job.aspect_ratio} ·{" "}
-                        {(job.export_image_format || "original").toUpperCase()} ·{" "}
+                      <p className="font-mono-tech text-[10px] text-[#737373]">
+                        {job.counts.completed}/{job.counts.total} saved ·{" "}
+                        {job.aspect_ratio} ·{" "}
                         {(job.metadata_export_mode || "csv").toUpperCase()}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
                         onClick={() => onSelectJob(job, "plan")}
-                        className="rounded-full bg-white/[0.05] px-2.5 py-1 text-[11px] text-[#d1d5db] hover:bg-white/[0.1] cursor-pointer"
+                        className="rounded border border-[#2E2E2E] bg-[#262626] px-2 py-1 text-[11px] text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
                       >
                         Plan
                       </button>
@@ -2065,7 +2112,7 @@ export function CreateScreen({
                             job.counts.completed > 0 ? "gallery" : "run"
                           )
                         }
-                        className="rounded-full bg-white/[0.08] px-2.5 py-1 text-[11px] text-white hover:bg-white/[0.15] cursor-pointer"
+                        className="rounded bg-[#FAFAFA] px-2 py-1 text-[11px] font-semibold text-[#121212] hover:bg-[#E5E5E5] cursor-pointer"
                       >
                         {job.counts.completed > 0 ? "Gallery" : "Run"}
                       </button>
@@ -2073,7 +2120,7 @@ export function CreateScreen({
                         type="button"
                         onClick={() => onDeleteJob(job.id, false)}
                         title={`Delete set #${job.id}`}
-                        className="flex size-7 items-center justify-center rounded-full bg-white/[0.04] text-[#646b78] hover:bg-rose-500/20 hover:text-rose-300 cursor-pointer"
+                        className="flex size-6 items-center justify-center rounded text-[#737373] hover:bg-[#EF4444]/15 hover:text-[#FCA5A5] cursor-pointer"
                       >
                         <Trash size={12} />
                       </button>
@@ -2081,8 +2128,8 @@ export function CreateScreen({
                   </div>
                 ))}
               </div>
-            )}
-          </StudioPanel>
+            </StudioPanel>
+          )}
         </div>
       </div>
 

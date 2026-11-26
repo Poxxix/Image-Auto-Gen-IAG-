@@ -7,6 +7,8 @@ import { GalleryScreen } from "@/components/studio/GalleryScreen"
 import { SettingsPanel } from "@/components/settings/SettingsPanel"
 import {
   addGenerationTurn,
+  bulkDeleteGenerations,
+  bulkDeleteReferences,
   cancelJob,
   createJob,
   deleteGeneration,
@@ -22,6 +24,7 @@ import {
   openExportFolder,
   pauseJob,
   pickExportFolder,
+  reconcileJobExportFolder,
   regenerateAllJobMetadata,
   removeJobWatermarks,
   replanJob,
@@ -252,6 +255,10 @@ export function App() {
     try {
       await deleteReference(refId)
       setReferences((prev) => prev.filter((r) => r.id !== refId))
+      if (activeJobIdRef.current) {
+        const refreshed = await fetchJob(activeJobIdRef.current).catch(() => null)
+        if (refreshed) syncJobInListOnly(refreshed)
+      }
       setNotice({
         tone: "emerald",
         message: `Deleted reference #${refId}.`,
@@ -260,6 +267,32 @@ export function App() {
       setNotice({
         tone: "rose",
         message: err instanceof Error ? err.message : "Failed to delete reference.",
+      })
+    }
+  }
+
+  const handleBulkDeleteReferences = async (options: {
+    reference_ids?: number[]
+    source_type?: "local_upload" | "pinterest"
+    delete_all?: boolean
+  }) => {
+    try {
+      const res = await bulkDeleteReferences(options)
+      const freshRefs = await fetchReferences()
+      setReferences(freshRefs)
+      if (activeJobIdRef.current) {
+        const refreshed = await fetchJob(activeJobIdRef.current).catch(() => null)
+        if (refreshed) syncJobInListOnly(refreshed)
+      }
+      setNotice({
+        tone: "emerald",
+        message: `Deleted ${res.deleted_count} reference image(s) cleanly.`,
+      })
+    } catch (err) {
+      setNotice({
+        tone: "rose",
+        message:
+          err instanceof Error ? err.message : "Failed to bulk-delete references.",
       })
     }
   }
@@ -429,12 +462,51 @@ export function App() {
       updateJobInState(updated)
       setNotice({
         tone: "emerald",
-        message: "Deleted shot and re-sequenced set cleanly.",
+        message: "Deleted image, renamed remaining files (-1..N) & updated pin-import.csv.",
       })
     } catch (err) {
       setNotice({
         tone: "rose",
         message: err instanceof Error ? err.message : "Could not delete shot.",
+      })
+    }
+  }
+
+  const handleBulkDeleteGenerations = async (jobId: number, genIds: number[]) => {
+    try {
+      const res = await bulkDeleteGenerations(jobId, genIds)
+      updateJobInState(res.job)
+      setNotice({
+        tone: "emerald",
+        message: `Deleted ${res.deleted_count} image(s), re-sequenced folder files & synced pin-import.csv.`,
+      })
+    } catch (err) {
+      setNotice({
+        tone: "rose",
+        message:
+          err instanceof Error ? err.message : "Could not bulk-delete images.",
+      })
+    }
+  }
+
+  const handleReconcileJobFolder = async (jobId: number) => {
+    try {
+      const res = await reconcileJobExportFolder(jobId)
+      if (res.job) {
+        updateJobInState(res.job)
+      }
+      setNotice({
+        tone: "emerald",
+        message:
+          res.removed_missing > 0 || res.reindexed > 0
+            ? `Synced folder & pin-import.csv (removed ${res.removed_missing} deleted file(s), renamed ${res.reindexed} file(s)).`
+            : "Folder images and pin-import.csv are 100% in sync.",
+      })
+    } catch (err) {
+      setNotice({
+        tone: "rose",
+        message:
+          err instanceof Error ? err.message : "Failed to sync folder & CSV.",
       })
     }
   }
@@ -764,6 +836,7 @@ export function App() {
           onUploadReferences={handleUploadReferences}
           onDiscoverPinterest={handleDiscoverPinterest}
           onDeleteReference={handleDeleteReference}
+          onBulkDeleteReferences={handleBulkDeleteReferences}
           onCreateJob={handleCreateJob}
           onSelectJob={(job, tab) => selectJobAndRemember(job, tab)}
           onDeleteJob={handleDeleteJob}
@@ -838,6 +911,8 @@ export function App() {
             handleUpdateGeneration(genId, updates)
           }
           onDeleteGeneration={handleDeleteGeneration}
+          onBulkDeleteGenerations={handleBulkDeleteGenerations}
+          onReconcileFolder={handleReconcileJobFolder}
           onRetryMetadata={handleRetryMetadata}
           onRetrySingleTurn={handleRetrySingleTurn}
           onOpenFolder={handleOpenFolder}

@@ -60,8 +60,27 @@ _TOOL_UNAVAILABLE_PATTERNS = (
     "unable to generate new images",
     "cannot directly generate or render images",
     "cannot directly output a visual image",
+    "as a language model, i am not designed to",
     "không có quyền truy cập vào công cụ tạo",
     "công cụ tạo hình ảnh hiện không khả dụng",
+    "là một mô hình ngôn ngữ",
+    "tôi không được thiết kế để tạo",
+    "không thể tạo hình ảnh",
+    "không thể trực tiếp tạo ảnh",
+)
+
+_TRANSIENT_BACKEND_ERROR_PATTERNS = (
+    "encountered an error doing what you asked",
+    "seem to be encountering an error",
+    "something went wrong",
+    "hard time fulfilling your request",
+    "unable to complete your request",
+    "couldn't generate that image",
+    "could not generate that image",
+    "try your request again",
+    "gặp lỗi khi thực hiện",
+    "gặp sự cố khi thực hiện",
+    "đã xảy ra lỗi",
 )
 
 
@@ -70,6 +89,13 @@ def _is_tool_unavailable_refusal(text: str) -> bool:
     if not low:
         return False
     return any(pat in low for pat in _TOOL_UNAVAILABLE_PATTERNS)
+
+
+def _is_transient_backend_error_text(text: str) -> bool:
+    low = " ".join((text or "").lower().split())
+    if not low:
+        return False
+    return any(pat in low for pat in _TRANSIENT_BACKEND_ERROR_PATTERNS)
 
 
 class ReferenceTooSimilarError(RuntimeError):
@@ -500,6 +526,16 @@ def _ensure_authenticated(
             f"Sign into {label} in Chrome Slot #{slot_id} (:{cdp_port}) and click Resume."
         )
 
+    # Recover automatically if Gemini tab drifted onto a non-chat subpage (e.g. /usage, /gems, /saved-info)
+    if engine == "gemini" and any(
+        sub in url_lower
+        for sub in ("/usage", "/saved-info", "/gems", "/extensions", "/updates", "/mystuff", "/sharing")
+    ):
+        try:
+            page.goto(AI_ENGINES["gemini"]["url"], wait_until="domcontentloaded", timeout=25000)
+        except Exception:
+            pass
+
     for _ in range(10):
         if _find_chat_input(page) is not None:
             return
@@ -566,8 +602,14 @@ def _has_composer_attachment(page: Any) -> bool:
         return False
 
 
-def _wait_for_upload_settled(page: Any, timeout_sec: float = 12.0) -> None:
+def _wait_for_upload_settled(page: Any, timeout_sec: float = 14.0) -> None:
+    """
+    Waits until the attached reference image finishes uploading into the chat composer
+    (checking spinners, progressbars, aria-busy flags, and send-button upload locks).
+    """
+    time.sleep(0.45)
     deadline = time.time() + timeout_sec
+    settled_streak = 0
     while time.time() < deadline:
         try:
             uploading = page.evaluate(
@@ -575,19 +617,55 @@ def _wait_for_upload_settled(page: Any, timeout_sec: float = 12.0) -> None:
                     const spinners = document.querySelectorAll(
                         'uploader-file-preview mat-progress-spinner, ' +
                         'uploader-file-preview [role="progressbar"], ' +
-                        '.file-preview-container [role="progressbar"]'
+                        'uploader-file-preview [aria-busy="true"], ' +
+                        '.file-preview-container [role="progressbar"], ' +
+                        '.file-preview-container [aria-busy="true"], ' +
+                        'rich-textarea mat-progress-spinner, ' +
+                        'input-container mat-progress-spinner'
                     );
                     for (const sp of spinners) {
-                        if (sp.offsetParent !== null) return true;
+                        if (sp && sp.offsetParent !== null) return true;
+                    }
+                    const preview = document.querySelector('uploader-file-preview, .file-preview-container');
+                    if (preview && preview.offsetParent !== null) {
+                        const st = window.getComputedStyle(preview);
+                        if (parseFloat(st.opacity || '1') < 0.85) return true;
                     }
                     return false;
                 }"""
             )
             if not uploading:
-                return
+                settled_streak += 1
+                if settled_streak >= 2:
+                    return
+            else:
+                settled_streak = 0
         except Exception:
             return
-        time.sleep(0.4)
+        time.sleep(0.35)
+
+
+def _prepare_cdp_reference_payload(path_obj: Path) -> tuple[bytes, str, str]:
+    """
+    Optimizes oversized reference images (>900 KB or >1536px max edge) into a crisp <=1536px JPEG
+    in memory so browser paste/upload finishes in <0.8s without stalling Gemini's upload XHR.
+    """
+    raw_bytes = path_obj.read_bytes()
+    mime_type = mimetypes.guess_type(str(path_obj))[0] or "image/jpeg"
+    try:
+        with Image.open(BytesIO(raw_bytes)) as im:
+            w, h = im.size
+            if len(raw_bytes) <= 900 * 1024 and max(w, h) <= 1536 and mime_type in ("image/jpeg", "image/png", "image/webp"):
+                return raw_bytes, path_obj.name, mime_type
+            rgb = im.convert("RGB")
+            if max(w, h) > 1536:
+                rgb.thumbnail((1536, 1536), Image.Resampling.LANCZOS)
+            buf = BytesIO()
+            rgb.save(buf, format="JPEG", quality=90, optimize=True)
+            stem = path_obj.stem
+            return buf.getvalue(), f"{stem}.jpg", "image/jpeg"
+    except Exception:
+        return raw_bytes, path_obj.name, mime_type
 
 
 def _attach_reference_image(
@@ -600,16 +678,47 @@ def _attach_reference_image(
         return False
 
     _clear_composer_attachments(page)
-    mime_type = mimetypes.guess_type(str(path_obj))[0] or "image/jpeg"
+    payload_bytes, upload_name, mime_type = _prepare_cdp_reference_payload(path_obj)
 
-    # Strategy 1: Synthetic ClipboardEvent('paste') onto rich-textarea / contenteditable
+    # Prefer direct <input type="file"> first when available (uses native browser file pipeline without huge JS base64 strings)
+    tmp_upload_path: Optional[Path] = None
+    try:
+        file_inputs = page.query_selector_all('input[type="file"]')
+        if file_inputs:
+            target_file_str = str(path_obj)
+            if payload_bytes is not None and (upload_name != path_obj.name or len(payload_bytes) != path_obj.stat().st_size):
+                tmp_fd = tempfile.NamedTemporaryFile(prefix="_studio_ref_", suffix=".jpg", delete=False)
+                tmp_upload_path = Path(tmp_fd.name)
+                tmp_fd.write(payload_bytes)
+                tmp_fd.close()
+                target_file_str = str(tmp_upload_path)
+            file_inputs[-1].set_input_files(target_file_str)
+            for _ in range(14):
+                time.sleep(0.25)
+                if _has_composer_attachment(page):
+                    _wait_for_upload_settled(page)
+                    log_fn(f"Attached reference image: {path_obj.name}")
+                    return True
+    except Exception:
+        pass
+    finally:
+        if tmp_upload_path is not None:
+            try:
+                tmp_upload_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    # Fallback Strategy 2: Synthetic ClipboardEvent('paste') onto rich-textarea / contenteditable
     try:
         input_box = _find_chat_input(page)
         if input_box:
-            input_box.click()
-            time.sleep(0.2)
+            try:
+                input_box.click(timeout=2000)
+            except Exception:
+                pass
+            time.sleep(0.15)
 
-        raw_b64 = base64.b64encode(path_obj.read_bytes()).decode("ascii")
+        raw_b64 = base64.b64encode(payload_bytes).decode("ascii")
         pasted = page.evaluate(
             """({ b64, fileName, mimeType }) => {
                 const selectors = [
@@ -646,32 +755,17 @@ def _attach_reference_image(
                 target.dispatchEvent(pasteEvent);
                 return true;
             }""",
-            {"b64": raw_b64, "fileName": path_obj.name, "mimeType": mime_type},
+            {"b64": raw_b64, "fileName": upload_name, "mimeType": mime_type},
         )
         if pasted:
-            for _ in range(10):
-                time.sleep(0.2)
+            for _ in range(14):
+                time.sleep(0.25)
                 if _has_composer_attachment(page):
                     _wait_for_upload_settled(page)
                     log_fn(f"Attached reference image: {path_obj.name}")
                     return True
     except Exception as exc:
         logger.debug("Clipboard paste fallback note: %s", exc)
-
-    # Strategy 2: Direct <input type="file">
-    try:
-        file_inputs = page.query_selector_all('input[type="file"]')
-        if file_inputs:
-            file_inputs[-1].set_input_files(str(path_obj))
-            for _ in range(10):
-                time.sleep(0.2)
-                if _has_composer_attachment(page):
-                    break
-            _wait_for_upload_settled(page)
-            log_fn(f"Attached reference image via file input: {path_obj.name}")
-            return True
-    except Exception:
-        pass
 
     return False
 
@@ -740,7 +834,7 @@ def _ensure_gemini_fast_mode(page: Any, log_fn: Callable[[str], None]) -> None:
         pass
 
 
-def _send_chat_message(page: Any, message: str) -> None:
+def _send_chat_message(page: Any, message: str, has_attachment: bool = False) -> None:
     input_box = _find_chat_input(page)
     if not input_box:
         raise ProviderAuthError("Chat input box disappeared before sending prompt.")
@@ -811,41 +905,48 @@ def _send_chat_message(page: Any, message: str) -> None:
             pass
         page.keyboard.insert_text(single_line)
 
-    # Poll up to 1.8s for the Send button to enable after Angular/React processes the input event
+    # Wait up to ~9.5s when an image attachment is finishing upload (or ~2.4s text-only) for Send button to unlock
+    max_polls = 68 if (has_attachment or _has_composer_attachment(page)) else 18
     sent = False
-    for _ in range(15):
-        time.sleep(0.12)
+    saw_disabled_btn = False
+    for _ in range(max_polls):
+        time.sleep(0.14)
         try:
-            sent = bool(
-                page.evaluate(
-                    """() => {
-                        const selectors = [
-                            'button[data-testid="send-button"]',
-                            'button.send-button:not(.stop)',
-                            'button[aria-label*="Send message" i]',
-                            'button[aria-label*="Send prompt" i]',
-                            'button[aria-label="Send"]',
-                            'button[aria-label*="Gửi tin nhắn" i]',
-                            'button[aria-label*="Gửi" i]',
-                            'button[type="submit"]'
-                        ];
-                        for (const s of selectors) {
-                            const btn = document.querySelector(s);
-                            if (btn && btn.offsetParent !== null && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+            res_state = page.evaluate(
+                """() => {
+                    const selectors = [
+                        'button[data-testid="send-button"]',
+                        'button.send-button:not(.stop)',
+                        'button[aria-label*="Send message" i]',
+                        'button[aria-label*="Send prompt" i]',
+                        'button[aria-label="Send"]',
+                        'button[aria-label*="Gửi tin nhắn" i]',
+                        'button[aria-label*="Gửi" i]',
+                        'button[type="submit"]'
+                    ];
+                    let foundDisabled = false;
+                    for (const s of selectors) {
+                        const btn = document.querySelector(s);
+                        if (btn && btn.offsetParent !== null) {
+                            if (!btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
                                 btn.click();
-                                return true;
+                                return 'sent';
                             }
+                            foundDisabled = true;
                         }
-                        return false;
-                    }"""
-                )
+                    }
+                    return foundDisabled ? 'disabled' : 'missing';
+                }"""
             )
-            if sent:
+            if res_state == "sent":
+                sent = True
                 break
+            if res_state == "disabled":
+                saw_disabled_btn = True
         except Exception:
             continue
 
-    if not sent:
+    if not sent and not saw_disabled_btn:
         page.keyboard.press("Enter")
 
 
@@ -1456,9 +1557,10 @@ def _extract_raw_bytes_via_cdp(
 
 def _is_generation_stream_url(url: str, method: str = "POST") -> bool:
     u = (url or "").lower()
+    if "batchexecute" in u:
+        return False
     if (
         "streamgenerate" in u
-        or "/_/bardchatui/" in u
         or "/backend-api/f/conversation" in u
         or "/backend-api/conversation" in u
         or "/rest/app-chat/" in u
@@ -1658,8 +1760,8 @@ def _evaluate_cdp_turn_signals(
         or gen_started > 0
         or new_imgs_count > 0
     )
+    composer_text_len = int(dom_state.get("composerTextLen", -1))
     if not send_confirmed:
-        composer_text_len = int(dom_state.get("composerTextLen", -1))
         # Only re-submit when text is still sitting unsent in composer (composer_text_len > 0),
         # or if composer couldn't be read after a generous wait. Prevents double-sending!
         if not nudged_send and (
@@ -1670,6 +1772,19 @@ def _evaluate_cdp_turn_signals(
         if no_send_polls >= 18:
             return "fail_transient", f"{engine.upper()} tab did not register prompt submission."
         return "continue", ""
+
+    # Safety net: if an early background request incremented gen_started while the prompt text is STILL sitting unsent
+    if (
+        not nudged_send
+        and composer_text_len > 15
+        and user_count <= prev_user_count
+        and assistant_count <= prev_assistant_count
+        and new_imgs_count == 0
+        and not streaming
+        and active_streams == 0
+        and seconds_since_progress >= 4.5
+    ):
+        return "nudge_send", "Prompt still in composer after attachment settle; clicking send..."
 
     # Server stream + DOM loaders + image downloads all finished with no valid image
     if (
@@ -1695,6 +1810,11 @@ def _evaluate_cdp_turn_signals(
                     return (
                         "fail_tool_unavailable",
                         f'{engine.upper()} image generation tool unavailable ("{snippet}...").',
+                    )
+                if _is_transient_backend_error_text(latest_text):
+                    return (
+                        "fail_transient",
+                        f'{engine.upper()} transient generation error ("{snippet}...").',
                     )
                 if not retried_explicit:
                     return "retry_image_prompt", "Assistant returned text only; requesting explicit image tool invocation..."
@@ -1911,8 +2031,9 @@ def generate_image_via_cdp(
             _ensure_gemini_fast_mode(page, _log)
             _hb()
 
+        attached_ref = False
         if reference_path and os.path.exists(reference_path):
-            _attach_reference_image(page, reference_path, _log)
+            attached_ref = _attach_reference_image(page, reference_path, _log)
         else:
             _clear_composer_attachments(page)
         _hb()
@@ -1926,13 +2047,13 @@ def generate_image_via_cdp(
         tracker.attach(page)
         try:
             full_prompt = (
-                "Generate a new image now using your image generation tool "
-                f"(output a visual image, do NOT reply with JSON or text caption). {prompt_final}"
-                if not prompt_final.lower().startswith("generate a")
+                "Generate a new visual image now (output an image, not text). "
+                f"{prompt_final}"
+                if not prompt_final.lower().startswith(("generate ", "create "))
                 else prompt_final
             )
             _log("Sending visual generation prompt to browser session...")
-            _send_chat_message(page, full_prompt)
+            _send_chat_message(page, full_prompt, has_attachment=attached_ref)
             _hb()
 
             start_ts = time.time()

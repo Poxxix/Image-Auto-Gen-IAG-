@@ -673,6 +673,7 @@ class JobRunner:
                 turn_axes=gen.get("variation_axes") or {},
                 has_reference=False,
                 reference_reused=False,
+                reference_strength=str(job.get("reference_strength") or "balanced"),
                 variation_number=idx,
                 strong_variation=True,
                 enabled_axes=(job.get("variation_axes") or {}).get("enabled_axes"),
@@ -867,6 +868,12 @@ class JobRunner:
             self._sim_failures.pop(gen_id, None)
 
         job = db.get_job(job_id) or job
+        fresh_gen = db.get_generation(gen_id)
+        if fresh_gen is None:
+            return True
+        idx = int(fresh_gen["index_num"])
+        gen = fresh_gen
+
         settings = db.get_settings(include_secrets=True)
         preferred_fmt = normalize_export_image_format(
             job.get("export_image_format") or settings.get("export_image_format") or "original"

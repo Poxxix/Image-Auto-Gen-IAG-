@@ -1,8 +1,35 @@
 export type StudioTab = "create" | "plan" | "run" | "gallery" | "settings"
 
 export type ReferenceMode = "prompt_only" | "local_upload" | "pinterest"
+export type ReferenceStrengthMode = "subject_keep" | "balanced" | "style_only"
 export type RunMode = "fixed" | "continuous"
 export type MetadataExportMode = "csv" | "none"
+
+export const REFERENCE_STRENGTH_OPTIONS: ReadonlyArray<{
+  id: ReferenceStrengthMode
+  label: string
+  badge: string
+  description: string
+}> = [
+  {
+    id: "subject_keep",
+    label: "Giữ Chủ thể · Đổi Bố cục",
+    badge: "CLOSE",
+    description: "Giữ 100% style & cùng chủ thể ảnh mẫu, đổi tư thế/vị trí/ánh sáng",
+  },
+  {
+    id: "balanced",
+    label: "Khóa Style DNA · Cảnh mới",
+    badge: "RECOMMENDED",
+    description: "Khóa 100% nét vẽ, chất liệu & bảng màu ảnh mẫu, dựng cảnh mới không trùng gốc",
+  },
+  {
+    id: "style_only",
+    label: "Chỉ mượn Màu & Chất liệu",
+    badge: "LOOSE",
+    description: "Chỉ mượn chất liệu, màu & mood từ ảnh mẫu để vẽ sang chủ đề mới",
+  },
+]
 
 const UPPER_ACRONYMS = new Set([
   "ai", "seo", "3d", "2d", "4k", "8k", "hd", "ui", "ux", "tv", "diy", "led", "uv", "rgb", "y2k",
@@ -268,6 +295,7 @@ export interface ImageSetJob {
   active_cdp_slot?: number
   base_prompt: string
   reference_mode: ReferenceMode
+  reference_strength?: ReferenceStrengthMode
   run_mode: RunMode
   target_count: number
   batch_size: number
@@ -390,6 +418,7 @@ export interface SystemStatusResponse {
   metadata_export_modes?: MetadataExportMode[]
   export_image_formats?: ExportImageFormat[]
   filename_styles?: FilenameStyle[]
+  reference_strength_modes?: ReferenceStrengthMode[]
   metadata_providers?: MetadataProviderType[]
   metadata_vision_modes?: MetadataVisionMode[]
   picassy_categories?: string[]
@@ -419,6 +448,7 @@ export interface CreateJobPayload {
   filename_style?: FilenameStyle
   preferred_cdp_slot?: number
   reference_mode: ReferenceMode
+  reference_strength?: ReferenceStrengthMode
   run_mode: RunMode
   target_count: number
   batch_size: number
@@ -646,6 +676,33 @@ export async function deleteGeneration(genId: number): Promise<ImageSetJob> {
   return data.job
 }
 
+export async function bulkDeleteGenerations(
+  jobId: number,
+  generationIds: number[]
+): Promise<{ deleted_count: number; job: ImageSetJob }> {
+  return apiJson<{ deleted_count: number; job: ImageSetJob }>(
+    `/api/jobs/${jobId}/generations/bulk-delete`,
+    {
+      method: "POST",
+      body: JSON.stringify({ generation_ids: generationIds }),
+    }
+  )
+}
+
+export async function reconcileJobExportFolder(jobId: number): Promise<{
+  removed_missing: number
+  reindexed: number
+  job: ImageSetJob | null
+}> {
+  return apiJson<{
+    removed_missing: number
+    reindexed: number
+    job: ImageSetJob | null
+  }>(`/api/jobs/${jobId}/reconcile-folder`, {
+    method: "POST",
+  })
+}
+
 export async function skipGeneration(
   genId: number
 ): Promise<{ generation: GenerationItem; job: ImageSetJob }> {
@@ -747,6 +804,20 @@ export async function updateReference(
 
 export async function deleteReference(refId: number): Promise<void> {
   await apiJson(`/api/references/${refId}`, { method: "DELETE" })
+}
+
+export async function bulkDeleteReferences(options: {
+  reference_ids?: number[]
+  source_type?: "local_upload" | "pinterest"
+  delete_all?: boolean
+}): Promise<{ deleted_count: number; deleted_ids: number[] }> {
+  return apiJson<{ deleted_count: number; deleted_ids: number[] }>(
+    "/api/references/bulk-delete",
+    {
+      method: "POST",
+      body: JSON.stringify(options),
+    }
+  )
 }
 
 export async function openExportFolder(
@@ -879,6 +950,7 @@ export interface SuggestAxesResponse {
   theme?: string
   base_prompt?: string
   aspect_ratio?: string
+  reference_strength?: ReferenceStrengthMode
   active_counts?: Record<string, number>
 }
 

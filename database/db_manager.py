@@ -21,6 +21,7 @@ from config import (
     normalize_filename_style,
     normalize_metadata_export_mode,
     normalize_picassy_categories,
+    normalize_reference_strength,
 )
 
 
@@ -52,6 +53,7 @@ SCHEMA: Dict[str, str] = {
             slug TEXT NOT NULL,
             base_prompt TEXT DEFAULT '',
             reference_mode TEXT DEFAULT 'prompt_only',
+            reference_strength TEXT DEFAULT 'balanced',
             run_mode TEXT DEFAULT 'fixed',
             target_count INTEGER DEFAULT 6,
             batch_size INTEGER DEFAULT 4,
@@ -426,7 +428,7 @@ class DatabaseManager:
         self,
         ids: Optional[List[int]] = None,
         source_type: Optional[str] = None,
-        limit: int = 100,
+        limit: int = 500,
     ) -> List[Dict[str, Any]]:
         with self._conn() as conn:
             if ids is not None:
@@ -450,30 +452,78 @@ class DatabaseManager:
                 ).fetchall()
         return [self._hydrate_reference(r) for r in rows]
 
-    def delete_reference(self, ref_id: int) -> Optional[Dict[str, Any]]:
-        existing = self.get_reference(ref_id)
-        if not existing:
-            return None
+    def delete_references_bulk(
+        self,
+        ref_ids: Optional[List[int]] = None,
+        source_type: Optional[str] = None,
+        delete_all: bool = False,
+    ) -> List[Dict[str, Any]]:
         with self._conn() as conn:
-            conn.execute('DELETE FROM "references" WHERE id = ?', (ref_id,))
+            if ref_ids is not None and len(ref_ids) > 0:
+                clean_ids = [int(x) for x in ref_ids if int(x) > 0]
+                if not clean_ids:
+                    return []
+                marks = ",".join("?" for _ in clean_ids)
+                rows = conn.execute(
+                    f'SELECT * FROM "references" WHERE id IN ({marks})', clean_ids
+                ).fetchall()
+            elif source_type and source_type in ("local_upload", "pinterest"):
+                rows = conn.execute(
+                    'SELECT * FROM "references" WHERE source_type = ?', (source_type,)
+                ).fetchall()
+            elif delete_all:
+                rows = conn.execute('SELECT * FROM "references"').fetchall()
+            else:
+                return []
+
+            if not rows:
+                return []
+
+            deleted_records = [self._hydrate_reference(r) for r in rows]
+            target_ids = [int(r["id"]) for r in rows]
+            target_set = set(target_ids)
+            marks = ",".join("?" for _ in target_ids)
+            ts = now_iso()
+
+            affected_job_rows = conn.execute(
+                f"SELECT DISTINCT job_id FROM generations WHERE reference_id IN ({marks})",
+                target_ids,
+            ).fetchall()
+            affected_job_ids = {int(r["job_id"]) for r in affected_job_rows if r["job_id"]}
+
+            conn.execute(f'DELETE FROM "references" WHERE id IN ({marks})', target_ids)
             conn.execute(
-                "UPDATE generations SET reference_id = NULL WHERE reference_id = ?",
-                (ref_id,),
+                f"UPDATE generations SET reference_id = NULL, updated_at = ? WHERE reference_id IN ({marks})",
+                (ts, *target_ids),
             )
-            # Clean ref_id from jobs.reference_ids_json so jobs never point to deleted references
+
             job_rows = conn.execute("SELECT id, reference_ids_json FROM jobs").fetchall()
             for j in job_rows:
+                jid = int(j["id"])
                 try:
                     r_ids = json.loads(j["reference_ids_json"] or "[]")
-                    if ref_id in r_ids:
-                        new_ids = [x for x in r_ids if x != ref_id]
+                    if any(int(x) in target_set for x in r_ids):
+                        new_ids = [x for x in r_ids if int(x) not in target_set]
                         conn.execute(
-                            "UPDATE jobs SET reference_ids_json = ? WHERE id = ?",
-                            (json.dumps(new_ids), j["id"]),
+                            "UPDATE jobs SET reference_ids_json = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(new_ids), ts, jid),
                         )
+                        affected_job_ids.discard(jid)
                 except Exception:
                     pass
-        return existing
+
+            if affected_job_ids:
+                j_marks = ",".join("?" for _ in affected_job_ids)
+                conn.execute(
+                    f"UPDATE jobs SET updated_at = ? WHERE id IN ({j_marks})",
+                    (ts, *affected_job_ids),
+                )
+
+        return deleted_records
+
+    def delete_reference(self, ref_id: int) -> Optional[Dict[str, Any]]:
+        deleted = self.delete_references_bulk(ref_ids=[int(ref_id)])
+        return deleted[0] if deleted else None
 
     # =========================================================================
     # Generations Operations
@@ -756,29 +806,95 @@ class DatabaseManager:
             )
         return self.get_generation(gen_id)
 
-    def delete_generation_with_resequence(self, gen_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Deletes a generation and re-sequences remaining generations' index_num (1..N),
-        returning the deleted record and any re-indexed sibling transitions so disk files
-        can be cleaned up and renamed atomically.
-        """
-        gen = self.get_generation(gen_id)
-        if not gen:
+    def _refresh_job_after_generation_delete(
+        self,
+        conn: sqlite3.Connection,
+        job_id: int,
+    ) -> None:
+        ts = now_iso()
+        job_row = conn.execute(
+            "SELECT status, run_mode, target_count FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if not job_row:
+            return
+        rem_rows = conn.execute(
+            "SELECT status FROM generations WHERE job_id = ?",
+            (job_id,),
+        ).fetchall()
+        total = len(rem_rows)
+        completed_like = sum(1 for r in rem_rows if r["status"] in ("completed", "metadata_pending"))
+        failed_like = sum(1 for r in rem_rows if r["status"] in ("failed", "cancelled"))
+        active_like = sum(1 for r in rem_rows if r["status"] in ("planned", "generating"))
+
+        new_status = str(job_row["status"] or "planned")
+        new_target = int(job_row["target_count"] or 1)
+        if job_row["run_mode"] == "fixed" and total > 0 and active_like == 0:
+            new_target = total
+        elif job_row["run_mode"] == "fixed" and total > 0 and new_target > total and new_status == "planned":
+            new_target = total
+
+        if total > 0 and active_like == 0 and failed_like == 0 and completed_like == total:
+            if new_status in ("completed_with_errors", "failed", "completed"):
+                new_status = "completed"
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET status = ?, target_count = ?, error = '',
+                        current_step = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        new_status,
+                        new_target,
+                        f"Completed {total}/{total} images cleanly.",
+                        ts,
+                        job_id,
+                    ),
+                )
+                return
+
+        conn.execute(
+            "UPDATE jobs SET target_count = ?, updated_at = ? WHERE id = ?",
+            (new_target, ts, job_id),
+        )
+
+    def delete_generations_bulk_with_resequence(
+        self,
+        job_id: int,
+        gen_ids: List[int],
+    ) -> Optional[Dict[str, Any]]:
+        clean_ids = [int(x) for x in gen_ids if int(x) > 0]
+        if not clean_ids:
             return None
-        job_id = gen["job_id"]
         reindexed: List[Dict[str, Any]] = []
         with self._conn() as conn:
-            conn.execute("DELETE FROM generations WHERE id = ?", (gen_id,))
+            marks = ",".join("?" for _ in clean_ids)
+            del_rows = conn.execute(
+                f"SELECT * FROM generations WHERE job_id = ? AND id IN ({marks})",
+                (job_id, *clean_ids),
+            ).fetchall()
+            if not del_rows:
+                return None
+            deleted_items = [self._hydrate_generation(r) for r in del_rows]
+            found_ids = [int(r["id"]) for r in del_rows]
+            f_marks = ",".join("?" for _ in found_ids)
+            conn.execute(
+                f"DELETE FROM generations WHERE job_id = ? AND id IN ({f_marks})",
+                (job_id, *found_ids),
+            )
+
             rows = conn.execute(
                 "SELECT id, index_num, image_file, image_path, sidecar_file, caption_file FROM generations WHERE job_id = ? ORDER BY index_num ASC, id ASC",
                 (job_id,),
             ).fetchall()
+            ts = now_iso()
             for idx, r in enumerate(rows, start=1):
                 old_idx = int(r["index_num"])
                 if old_idx != idx:
                     conn.execute(
                         "UPDATE generations SET index_num = ?, updated_at = ? WHERE id = ?",
-                        (idx, now_iso(), r["id"]),
+                        (idx, ts, r["id"]),
                     )
                     reindexed.append(
                         {
@@ -791,7 +907,23 @@ class DatabaseManager:
                             "caption_file": r["caption_file"] or "",
                         }
                     )
-        return {"deleted": gen, "reindexed": reindexed}
+            self._refresh_job_after_generation_delete(conn, job_id)
+        return {
+            "deleted": deleted_items[0],
+            "deleted_items": deleted_items,
+            "reindexed": reindexed,
+        }
+
+    def delete_generation_with_resequence(self, gen_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Deletes a generation and re-sequences remaining generations' index_num (1..N),
+        returning the deleted record and any re-indexed sibling transitions so disk files
+        can be cleaned up and renamed atomically.
+        """
+        gen = self.get_generation(gen_id)
+        if not gen:
+            return None
+        return self.delete_generations_bulk_with_resequence(int(gen["job_id"]), [int(gen_id)])
 
     def delete_generation(self, gen_id: int) -> bool:
         res = self.delete_generation_with_resequence(gen_id)
@@ -870,6 +1002,9 @@ class DatabaseManager:
         data["filename_style"] = normalize_filename_style(
             data.get("filename_style"), default="picassy_slug"
         )
+        data["reference_strength"] = normalize_reference_strength(
+            data.get("reference_strength"), default="balanced"
+        )
         data["preferred_cdp_slot"] = int(data.get("preferred_cdp_slot") or 0)
         data["active_cdp_slot"] = int(data.get("active_cdp_slot") or 0)
         data["caption_prompt"] = data.get("caption_prompt") or ""
@@ -932,6 +1067,7 @@ class DatabaseManager:
         theme: str,
         base_prompt: str = "",
         reference_mode: str = "prompt_only",
+        reference_strength: str = "balanced",
         run_mode: str = "fixed",
         target_count: int = 6,
         batch_size: int = 4,
@@ -972,13 +1108,14 @@ class DatabaseManager:
 
         clean_mode = normalize_metadata_export_mode(metadata_export_mode, default="csv")
         clean_image_format = normalize_export_image_format(export_image_format)
+        clean_ref_strength = normalize_reference_strength(reference_strength, default="balanced")
 
         now = now_iso()
         with self._conn() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO jobs (
-                    theme, slug, base_prompt, reference_mode, run_mode,
+                    theme, slug, base_prompt, reference_mode, reference_strength, run_mode,
                     target_count, batch_size, session_cap, cycle_references,
                     aspect_ratio, metadata_language, metadata_export_mode,
                     export_image_format, primary_tag, category, filename_style,
@@ -987,13 +1124,14 @@ class DatabaseManager:
                     model, export_dir, preset_id, fixed_elements_json,
                     variation_axes_json, reference_ids_json, status,
                     current_step, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_theme,
                     slug,
                     base_prompt.strip(),
                     reference_mode,
+                    clean_ref_strength,
                     run_mode,
                     int(target_count),
                     int(batch_size),
@@ -1147,6 +1285,7 @@ class DatabaseManager:
             "slug",
             "base_prompt",
             "reference_mode",
+            "reference_strength",
             "run_mode",
             "target_count",
             "batch_size",
@@ -1186,6 +1325,10 @@ class DatabaseManager:
         if "filename_style" in updates:
             updates["filename_style"] = normalize_filename_style(
                 updates["filename_style"], default="picassy_slug"
+            )
+        if "reference_strength" in updates:
+            updates["reference_strength"] = normalize_reference_strength(
+                updates["reference_strength"], default="balanced"
             )
         if "preferred_cdp_slot" in updates:
             val = int(updates["preferred_cdp_slot"] or 0)

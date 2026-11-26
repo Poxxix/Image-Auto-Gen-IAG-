@@ -98,6 +98,29 @@ FILENAME_STYLES: List[str] = [
     "studio_seq",
 ]
 
+REFERENCE_STRENGTH_MODES: List[str] = [
+    "subject_keep",
+    "balanced",
+    "style_only",
+]
+
+
+def normalize_reference_strength(
+    value: Optional[str],
+    default: str = "balanced",
+    strict: bool = False,
+) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    if raw in REFERENCE_STRENGTH_MODES:
+        return raw
+    if strict:
+        raise ValueError(
+            f"Unsupported reference_strength '{value}'. Expected one of: {', '.join(REFERENCE_STRENGTH_MODES)}."
+        )
+    return default
+
 METADATA_PROVIDERS: List[str] = [
     "auto",
     "gemini",

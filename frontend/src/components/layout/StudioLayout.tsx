@@ -17,7 +17,6 @@ import {
   ArrowSquareOut,
 } from "@phosphor-icons/react"
 import { StudioBadge, StudioButton } from "@/components/shared/StudioPrimitives"
-import { BrandIcon } from "@/components/shared/BrandIcon"
 import {
   getJobZipUrl,
   type CdpSlotStatus,
@@ -71,60 +70,45 @@ export function StudioLayout({
   const cdpSlots: CdpSlotStatus[] = status?.cdp_slots || []
   const enabledSlots = cdpSlots.filter((s) => s.enabled)
   const onlineSlots = enabledSlots.filter((s) => s.connected)
-  const isCdpConnected = onlineSlots.length > 0 || Boolean(status?.cdp?.online || status?.cdp?.connected)
+  const isCdpConnected =
+    onlineSlots.length > 0 || Boolean(status?.cdp?.online || status?.cdp?.connected)
   const plannedCount = activeJob?.counts?.planned || 0
   const runningCount = jobs.filter((j) => j.status === "running").length
   const completedCount = activeJob?.counts?.completed || 0
 
-  const navItems: Array<{
+  const pipelineItems: Array<{
     id: StudioTab
     step: string
     label: string
-    shortLabel: string
     badge?: string | number
-    badgeTone?: "amber" | "emerald" | "sky"
     icon: React.ReactNode
   }> = [
     {
       id: "create",
-      step: "01",
-      label: "Create Brief",
-      shortLabel: "Create",
-      icon: <Sparkle size={15} weight="duotone" />,
+      step: "1",
+      label: "Create",
+      icon: <Sparkle size={15} />,
     },
     {
       id: "plan",
-      step: "02",
-      label: "Variation Plan",
-      shortLabel: "Plan",
+      step: "2",
+      label: "Plan",
       badge: plannedCount > 0 ? plannedCount : undefined,
-      badgeTone: "amber",
-      icon: <ListChecks size={15} weight="duotone" />,
+      icon: <ListChecks size={15} />,
     },
     {
       id: "run",
-      step: "03",
-      label: "Render Queue",
-      shortLabel: "Run",
-      badge: runningCount > 0 ? "LIVE" : undefined,
-      badgeTone: "sky",
-      icon: <Play size={15} weight="duotone" />,
+      step: "3",
+      label: "Run",
+      badge: runningCount > 0 ? "Live" : undefined,
+      icon: <Play size={15} />,
     },
     {
       id: "gallery",
-      step: "04",
-      label: "Set Gallery",
-      shortLabel: "Gallery",
+      step: "4",
+      label: "Gallery",
       badge: completedCount > 0 ? completedCount : undefined,
-      badgeTone: "emerald",
-      icon: <Images size={15} weight="duotone" />,
-    },
-    {
-      id: "settings",
-      step: "05",
-      label: "Studio Settings",
-      shortLabel: "Settings",
-      icon: <Sliders size={15} weight="duotone" />,
+      icon: <Images size={15} />,
     },
   ]
 
@@ -155,55 +139,56 @@ export function StudioLayout({
     return `…/${parts.slice(-2).join("/")}`
   }
 
+  const slotList =
+    cdpSlots.length > 0
+      ? cdpSlots
+      : [
+          {
+            slot_id: 1,
+            port: 9222,
+            label: "Slot 1",
+            enabled: true,
+            connected: isCdpConnected,
+            open_engines: [] as string[],
+            active_job_id: null,
+            active_generation_id: null,
+          },
+        ]
+
   return (
-    <div className="flex min-h-screen w-full bg-[#07080b] text-[#f4f5f7]">
-      {/* Desktop Sticky Left Studio Sidebar */}
-      <aside className="hidden lg:flex lg:sticky lg:top-0 lg:h-screen w-[284px] shrink-0 flex-col justify-between border-r border-white/[0.07] bg-[#0a0c10] p-4 select-none">
-        <div className="flex flex-1 min-h-0 flex-col gap-5">
-          {/* Studio Brand Header + New Set Action */}
-          <div className="flex items-center justify-between gap-2 px-1 pt-0.5">
+    <div className="flex min-h-screen w-full bg-[#121212] text-[#F5F5F5]">
+      {/* Left Sidebar (244px, pure neutral) */}
+      <aside className="hidden lg:flex lg:sticky lg:top-0 lg:h-screen w-[244px] shrink-0 flex-col justify-between border-r border-[#2E2E2E] bg-[#171717] p-3.5 select-none">
+        <div className="flex flex-1 min-h-0 flex-col gap-4">
+          {/* Header + New Set Button */}
+          <div className="flex items-center justify-between gap-2 px-1">
             <button
               type="button"
               onClick={() => onSelectTab("create")}
-              className="flex items-center gap-2.5 text-left group cursor-pointer"
+              className="flex items-center gap-2.5 text-left cursor-pointer"
             >
-              <span className="flex size-9 items-center justify-center rounded-xl bg-amber-400 text-[#050505] shadow-[0_4px_16px_rgba(251,191,36,0.25)] transition-transform group-hover:scale-105">
-                <Aperture size={20} weight="bold" />
+              <span className="flex size-7 items-center justify-center rounded-md bg-[#FAFAFA] text-[#121212]">
+                <Aperture size={16} weight="bold" />
               </span>
-              <div>
-                <p className="font-display text-sm font-semibold tracking-tight text-white">
-                  Theme Set Studio
-                </p>
-                <p className="font-mono-tech text-[10px] text-amber-300/85">
-                  v4.1 · Visual Set Atelier
-                </p>
-              </div>
+              <span className="text-sm font-semibold tracking-tight text-[#F5F5F5]">
+                Theme Studio
+              </span>
             </button>
 
             <button
               type="button"
               onClick={() => onSelectTab("create")}
-              title="Create a new Theme Image Set"
-              className="inline-flex h-8 items-center gap-1 rounded-full bg-white/[0.07] px-2.5 text-[11px] font-medium text-white ring-1 ring-white/[0.12] hover:bg-amber-400 hover:text-[#050505] hover:ring-amber-300 transition-all cursor-pointer"
+              title="Create new image set"
+              className="inline-flex h-7 items-center gap-1 rounded-md bg-[#FAFAFA] px-2.5 text-[11px] font-semibold text-[#121212] transition-colors duration-150 hover:bg-[#E5E5E5] cursor-pointer"
             >
-              <Plus size={13} weight="bold" />
+              <Plus size={12} weight="bold" />
               New
             </button>
           </div>
 
-          {/* 5 Workflow Views */}
-          <nav aria-label="Studio stages" className="flex flex-col gap-1">
-            <div className="mb-1 flex items-center justify-between px-2">
-              <span className="font-mono-tech text-[10px] uppercase tracking-[0.18em] text-[#646b78]">
-                Studio Pipeline
-              </span>
-              {activeJob && (
-                <span className="font-mono-tech text-[10px] text-[#9ca3af]">
-                  Set #{activeJob.id}
-                </span>
-              )}
-            </div>
-            {navItems.map((item) => {
+          {/* 4-Step Pipeline */}
+          <nav aria-label="Workflow" className="flex flex-col gap-0.5">
+            {pipelineItems.map((item) => {
               const active = activeTab === item.id
               return (
                 <button
@@ -211,40 +196,41 @@ export function StudioLayout({
                   type="button"
                   onClick={() => onSelectTab(item.id)}
                   className={cn(
-                    "group relative flex items-center justify-between rounded-xl px-3 py-2 text-xs font-medium transition-all cursor-pointer",
+                    "group relative flex items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors duration-150 cursor-pointer",
                     active
-                      ? "bg-white/[0.08] text-white ring-1 ring-amber-400/35 shadow-[0_4px_16px_rgba(0,0,0,0.3)]"
-                      : "text-[#9ca3af] hover:bg-white/[0.035] hover:text-[#f4f5f7]"
+                      ? "bg-[#262626] text-[#F5F5F5]"
+                      : "text-[#A3A3A3] hover:bg-[#1F1F1F] hover:text-[#F5F5F5]"
                   )}
                 >
                   {active && (
-                    <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-amber-400" />
+                    <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-[#FAFAFA]" />
                   )}
-                  <span className="flex items-center gap-2.5">
+                  <span className="flex items-center gap-2">
                     <span
                       className={cn(
-                        "font-mono-tech text-[10px]",
-                        active ? "text-amber-300 font-semibold" : "text-[#646b78]"
+                        "w-3.5 text-left font-mono-tech text-[11px]",
+                        active ? "font-semibold text-[#F5F5F5]" : "text-[#737373]"
                       )}
                     >
                       {item.step}
                     </span>
-                    <span className={active ? "text-amber-300" : "text-[#9ca3af] group-hover:text-white"}>
+                    <span
+                      className={cn(
+                        active ? "text-[#F5F5F5]" : "text-[#737373] group-hover:text-[#A3A3A3]"
+                      )}
+                    >
                       {item.icon}
                     </span>
                     <span>{item.label}</span>
                   </span>
+
                   {item.badge !== undefined && (
                     <span
                       className={cn(
-                        "rounded-full px-2 py-0.5 font-mono-tech text-[10px] font-semibold",
-                        item.badgeTone === "sky"
-                          ? "bg-sky-500/20 text-sky-300 ring-1 ring-sky-400/30"
-                          : item.badgeTone === "emerald"
-                            ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30"
-                            : active
-                              ? "bg-amber-400 text-[#050505]"
-                              : "bg-white/[0.06] text-[#d1d5db]"
+                        "rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-medium",
+                        active
+                          ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                          : "bg-[#262626] text-[#A3A3A3]"
                       )}
                     >
                       {item.badge}
@@ -255,37 +241,37 @@ export function StudioLayout({
             })}
           </nav>
 
-          {/* Image Sets Explorer (Flex-1 Scrollable) */}
-          <div className="flex flex-1 min-h-0 flex-col gap-2 border-t border-white/[0.06] pt-3.5">
-            <div className="flex items-center justify-between px-2">
-              <span className="font-mono-tech text-[10px] uppercase tracking-[0.18em] text-[#646b78]">
-                Image Sets ({jobs.length})
+          {/* Image Sets List */}
+          <div className="flex flex-1 min-h-0 flex-col gap-2 border-t border-[#2E2E2E] pt-3">
+            <div className="flex items-center justify-between px-1.5">
+              <span className="text-xs font-medium text-[#A3A3A3]">
+                Sets ({jobs.length})
               </span>
               {jobs.length > 0 && (
-                <span className="font-mono-tech text-[10px] text-[#646b78]">
-                  {jobs.reduce((acc, j) => acc + j.counts.completed, 0)} imgs
+                <span className="font-mono-tech text-[10px] text-[#737373]">
+                  {jobs.reduce((acc, j) => acc + j.counts.completed, 0)} saved
                 </span>
               )}
             </div>
 
             {jobs.length > 3 && (
-              <div className="relative px-1">
+              <div className="relative">
                 <MagnifyingGlass
                   size={12}
-                  className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#646b78]"
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[#737373]"
                 />
                 <input
                   type="text"
                   value={setSearch}
                   onChange={(e) => setSetSearch(e.target.value)}
-                  placeholder="Filter sets by theme or #id…"
-                  className="h-7 w-full rounded-lg bg-white/[0.03] pl-7 pr-6 text-[11px] text-white placeholder:text-[#646b78] ring-1 ring-white/[0.07] outline-none focus:ring-white/25"
+                  placeholder="Filter sets…"
+                  className="h-7 w-full rounded-md border border-[#2E2E2E] bg-[#1C1C1C] pl-7 pr-6 text-xs text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#525252]"
                 />
                 {setSearch && (
                   <button
                     type="button"
                     onClick={() => setSetSearch("")}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#646b78] hover:text-white cursor-pointer"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#737373] hover:text-[#F5F5F5] cursor-pointer"
                   >
                     <X size={11} />
                   </button>
@@ -293,12 +279,12 @@ export function StudioLayout({
               </div>
             )}
 
-            <div className="flex flex-1 min-h-0 flex-col gap-1.5 overflow-y-auto pr-1">
+            <div className="flex flex-1 min-h-0 flex-col gap-1 overflow-y-auto pr-0.5">
               {filteredJobs.length === 0 ? (
-                <p className="px-2 py-3 text-xs text-[#646b78]">
+                <p className="px-1.5 py-2 text-xs text-[#737373]">
                   {jobs.length === 0
-                    ? "No sets yet. Compose your first theme brief in Step 01."
-                    : "No sets match your filter."}
+                    ? "No sets yet."
+                    : "No sets match filter."}
                 </p>
               ) : (
                 filteredJobs.map((job) => {
@@ -312,10 +298,10 @@ export function StudioLayout({
                     <div
                       key={job.id}
                       className={cn(
-                        "group relative flex flex-col gap-1.5 rounded-xl p-2.5 text-left transition-all ring-1",
+                        "group relative flex flex-col gap-1.5 rounded-md border p-2 text-left transition-colors duration-150",
                         isSelected
-                          ? "bg-white/[0.06] ring-white/[0.16] text-white"
-                          : "bg-white/[0.015] ring-white/[0.04] text-[#9ca3af] hover:bg-white/[0.04] hover:text-[#e5e7eb]"
+                          ? "border-[#404040] bg-[#242424] text-[#F5F5F5]"
+                          : "border-transparent bg-transparent text-[#A3A3A3] hover:border-[#2E2E2E] hover:bg-[#1C1C1C]"
                       )}
                     >
                       <div className="flex items-center justify-between gap-1.5">
@@ -325,21 +311,23 @@ export function StudioLayout({
                             const nextTab: StudioTab =
                               job.status === "running"
                                 ? "run"
-                                : activeTab === "plan" || activeTab === "run" || activeTab === "gallery"
+                                : activeTab === "plan" ||
+                                    activeTab === "run" ||
+                                    activeTab === "gallery"
                                   ? activeTab
                                   : done > 0
                                     ? "gallery"
                                     : "plan"
                             onSelectJob(job, nextTab)
                           }}
-                          className="truncate text-xs font-semibold text-left flex-1 cursor-pointer"
+                          className="truncate text-xs font-medium text-left flex-1 cursor-pointer"
                         >
-                          <span className="font-mono-tech text-[10px] text-amber-300/90 mr-1">
+                          <span className="mr-1 font-mono-tech text-[10px] text-[#737373]">
                             #{job.id}
                           </span>
                           {job.theme}
                         </button>
-                        <span className="shrink-0 font-mono-tech text-[10px] text-emerald-300">
+                        <span className="shrink-0 font-mono-tech text-[10px] text-[#A3A3A3]">
                           {done}/{job.counts.total}
                         </span>
                         <button
@@ -349,46 +337,46 @@ export function StudioLayout({
                             onDeleteJob(job.id, false)
                           }}
                           title={`Delete set #${job.id}`}
-                          className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-[#646b78] hover:bg-rose-500/20 hover:text-rose-300 transition-opacity cursor-pointer"
+                          className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-[#737373] hover:bg-[#EF4444]/15 hover:text-[#FCA5A5] transition-opacity cursor-pointer"
                         >
                           <Trash size={12} />
                         </button>
                       </div>
 
-                      <div className="h-1 w-full overflow-hidden rounded-full bg-white/[0.06]">
+                      <div className="h-[2px] w-full overflow-hidden rounded-full bg-[#2E2E2E]">
                         <div
-                          className={cn(
-                            "h-full rounded-full transition-all",
-                            job.status === "running"
-                              ? "bg-sky-400"
-                              : done > 0
-                                ? "bg-emerald-400"
-                                : "bg-amber-400/60"
-                          )}
-                          style={{ width: `${Math.max(pct, job.counts.planned > 0 ? 8 : 0)}%` }}
+                          className="h-full rounded-full bg-[#D4D4D4] transition-all duration-150"
+                          style={{
+                            width: `${Math.max(pct, job.counts.planned > 0 ? 6 : 0)}%`,
+                          }}
                         />
                       </div>
 
-                      <div className="flex items-center justify-between gap-1 pt-0.5">
-                        <span className="font-mono-tech text-[10px] text-[#646b78] truncate">
-                          {job.active_cdp_slot ? `S${job.active_cdp_slot} · ` : ""}
-                          {job.aspect_ratio} ·{" "}
-                          {expMode === "none" ? "IMG" : "CSV"}
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-mono-tech text-[10px] text-[#737373] truncate">
+                          {job.active_cdp_slot ? `S${job.active_cdp_slot} ` : ""}
+                          {job.aspect_ratio} {expMode === "none" ? "Img" : "CSV"}
                         </span>
-                        <div className="flex items-center gap-1">
-                          {(["plan", "run", "gallery"] as const).map((t) => (
+                        <div className="flex items-center gap-0.5">
+                          {(
+                            [
+                              ["plan", "Plan"],
+                              ["run", "Run"],
+                              ["gallery", "Gallery"],
+                            ] as const
+                          ).map(([t, label]) => (
                             <button
                               key={t}
                               type="button"
                               onClick={() => onSelectJob(job, t)}
                               className={cn(
-                                "rounded px-1.5 py-0.5 font-mono-tech text-[9px] uppercase transition-colors cursor-pointer",
+                                "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors duration-150 cursor-pointer",
                                 isSelected && activeTab === t
-                                  ? "bg-amber-400/20 text-amber-300 font-semibold"
-                                  : "bg-white/[0.03] text-[#9ca3af] hover:bg-white/[0.1] hover:text-white"
+                                  ? "bg-[#FAFAFA] text-[#121212]"
+                                  : "text-[#737373] hover:bg-[#2E2E2E] hover:text-[#F5F5F5]"
                               )}
                             >
-                              {t}
+                              {label}
                             </button>
                           ))}
                         </div>
@@ -401,249 +389,214 @@ export function StudioLayout({
           </div>
         </div>
 
-        {/* Bottom 4-Slot Chrome CDP Pool Card */}
-        <div className="mt-3 rounded-2xl bg-white/[0.025] p-3 ring-1 ring-white/[0.07] space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <BrandIcon name="gemini" size={15} />
-              <span className="text-xs font-semibold text-white">
-                Chrome Pool ({onlineSlots.length}/{enabledSlots.length || 1})
+        {/* Bottom Dock: Chrome Slots + Settings */}
+        <div className="mt-3 flex flex-col gap-2 border-t border-[#2E2E2E] pt-3">
+          <div className="rounded-md border border-[#2E2E2E] bg-[#1C1C1C] p-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-[#F5F5F5]">
+                Chrome ({onlineSlots.length}/{enabledSlots.length || 1})
+              </span>
+              <span className="text-[10px] text-[#A3A3A3]">
+                {isCdpConnected ? "Online" : "Standby"}
               </span>
             </div>
-            <StudioBadge
-              tone={isCdpConnected ? "emerald" : "amber"}
-              label={isCdpConnected ? "Online" : "Standby"}
-            />
-          </div>
 
-          <div className="grid grid-cols-2 gap-1.5">
-            {(cdpSlots.length > 0
-              ? cdpSlots
-              : [{ slot_id: 1, port: 9222, label: "Slot 1", enabled: true, connected: isCdpConnected, open_engines: [] as string[], active_job_id: null, active_generation_id: null }]
-            ).map((slot) => (
-              <button
-                key={slot.slot_id}
-                type="button"
-                disabled={launchingCdp}
-                onClick={() => handleLaunchClick("gemini", slot.slot_id)}
-                title={`${slot.label} (:${slot.port})${slot.active_job_id ? ` · Running Set #${slot.active_job_id}` : !slot.enabled ? (slot.connected ? " · Browser connected but worker disabled — click to enable & focus" : " · Disabled — click to launch & enable") : ""} — click to Launch/Focus`}
-                className={cn(
-                  "flex items-center justify-between rounded-xl px-2 py-1 text-[10px] font-mono-tech ring-1 transition-all cursor-pointer",
-                  slot.enabled && slot.connected
-                    ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/35 hover:bg-emerald-500/25"
-                    : !slot.enabled && slot.connected
-                      ? "bg-amber-500/15 text-amber-200 ring-amber-400/35 hover:bg-amber-500/25"
-                      : slot.enabled
-                        ? "bg-white/[0.04] text-[#d1d5db] ring-white/[0.09] hover:bg-white/[0.1]"
-                        : "bg-white/[0.015] text-[#646b78] ring-white/[0.04] opacity-70 hover:opacity-100"
-                )}
-              >
-                <span className="truncate">
-                  S{slot.slot_id} :{slot.port}{!slot.enabled ? " (Off)" : ""}
-                </span>
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full shrink-0",
+            <div className="grid grid-cols-2 gap-1">
+              {slotList.map((slot) => (
+                <button
+                  key={slot.slot_id}
+                  type="button"
+                  disabled={launchingCdp}
+                  onClick={() => handleLaunchClick("gemini", slot.slot_id)}
+                  title={`${slot.label} (:${slot.port})${
                     slot.active_job_id
-                      ? "bg-sky-400 animate-pulse"
-                      : slot.enabled && slot.connected
-                        ? "bg-emerald-400"
-                        : slot.connected
-                          ? "bg-amber-400"
-                          : "bg-[#4b5563]"
+                      ? ` — rendering set #${slot.active_job_id}`
+                      : !slot.enabled
+                        ? " — off (click to launch & enable)"
+                        : " — click to launch or focus"
+                  }`}
+                  className={cn(
+                    "flex items-center justify-between rounded border px-2 py-1 font-mono-tech text-[10px] transition-colors duration-150 cursor-pointer",
+                    slot.enabled && slot.connected
+                      ? "border-[#525252] bg-[#2A2A2A] text-[#F5F5F5] hover:border-[#737373]"
+                      : slot.enabled
+                        ? "border-[#2E2E2E] bg-[#222222] text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5]"
+                        : "border-[#262626] bg-[#171717] text-[#737373] hover:border-[#404040] hover:text-[#A3A3A3]"
                   )}
-                />
-              </button>
-            ))}
+                >
+                  <span className="truncate">
+                    S{slot.slot_id} :{slot.port}
+                  </span>
+                  <span
+                    className={cn(
+                      "size-1.5 rounded-full shrink-0",
+                      slot.active_job_id
+                        ? "bg-[#FAFAFA] animate-pulse"
+                        : slot.enabled && slot.connected
+                          ? "bg-[#FAFAFA]"
+                          : slot.connected
+                            ? "bg-[#A3A3A3]"
+                            : "bg-[#404040]"
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
           </div>
 
-          <p className="text-[10px] text-[#9ca3af] line-clamp-1">
-            {onlineSlots.length > 0
-              ? `Active ports: ${onlineSlots.map((s) => `:${s.port}`).join(", ")}`
-              : "Click any slot above to launch Chrome (:9222–:9225)."}
-          </p>
+          <button
+            type="button"
+            onClick={() => onSelectTab("settings")}
+            className={cn(
+              "relative flex items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors duration-150 cursor-pointer",
+              activeTab === "settings"
+                ? "bg-[#262626] text-[#F5F5F5]"
+                : "text-[#A3A3A3] hover:bg-[#1F1F1F] hover:text-[#F5F5F5]"
+            )}
+          >
+            {activeTab === "settings" && (
+              <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-[#FAFAFA]" />
+            )}
+            <span className="flex items-center gap-2">
+              <Sliders
+                size={15}
+                className={activeTab === "settings" ? "text-[#F5F5F5]" : "text-[#737373]"}
+              />
+              <span>Settings</span>
+            </span>
+          </button>
         </div>
       </aside>
 
-      {/* Right Main Workspace Area */}
+      {/* Right Main Area */}
       <div className="flex flex-1 flex-col min-w-0">
-        {/* Sleek Sticky Top Navigation & Context Toolbar */}
-        <header className="sticky top-0 z-30 border-b border-white/[0.07] bg-[#07080b]/90 px-4 py-2.5 backdrop-blur-xl sm:px-8">
-          <div className="mx-auto flex max-w-[1320px] flex-wrap items-center justify-between gap-3">
-            {/* Left: Mobile Menu Trigger + Active Set Context Pill */}
-            <div className="flex items-center gap-3 min-w-0">
+        {/* Minimal 46px Top Context Bar */}
+        <header className="sticky top-0 z-30 border-b border-[#2E2E2E] bg-[#171717] px-4 py-2 sm:px-7">
+          <div className="mx-auto flex min-h-[30px] max-w-[1360px] flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
               <button
                 type="button"
                 onClick={() => setMobileSidebarOpen(true)}
-                aria-label="Open navigation drawer"
-                className="flex lg:hidden size-9 items-center justify-center rounded-xl bg-white/[0.05] text-white ring-1 ring-white/[0.1] cursor-pointer"
+                aria-label="Open menu"
+                className="flex lg:hidden size-8 items-center justify-center rounded-md border border-[#2E2E2E] bg-[#262626] text-[#F5F5F5] cursor-pointer"
               >
-                <List size={18} />
+                <List size={17} />
               </button>
 
               {activeJob ? (
                 <div className="flex flex-wrap items-center gap-2 min-w-0">
-                  <span className="rounded-lg bg-amber-400/15 px-2 py-0.5 font-mono-tech text-[11px] font-semibold text-amber-300 ring-1 ring-amber-400/30">
-                    SET #{activeJob.id}
+                  <span className="rounded border border-[#383838] bg-[#262626] px-1.5 py-0.5 font-mono-tech text-[11px] text-[#D4D4D4]">
+                    #{activeJob.id}
                   </span>
-                  <h2 className="truncate max-w-[200px] sm:max-w-[300px] font-display text-sm font-semibold text-white">
+                  <h2 className="truncate max-w-[200px] sm:max-w-[360px] text-sm font-semibold text-[#F5F5F5]">
                     {activeJob.theme}
                   </h2>
                   <StudioBadge
-                    tone={
-                      activeJob.status === "completed"
-                        ? "emerald"
-                        : activeJob.status === "running"
-                          ? "sky"
-                          : activeJob.status === "paused"
-                            ? "amber"
-                            : "neutral"
-                    }
+                    tone={activeJob.status === "failed" ? "rose" : "neutral"}
                     label={activeJob.status.replace(/_/g, " ")}
                     pulse={activeJob.status === "running"}
                   />
                   <button
                     type="button"
                     onClick={() => onOpenFolder(activeJob.id)}
-                    title={`Click to open folder in Finder: ${activeJob.export_dir}`}
-                    className="hidden xl:inline-flex items-center gap-1 rounded-full bg-white/[0.03] px-2.5 py-0.5 font-mono-tech text-[10px] text-[#9ca3af] ring-1 ring-white/[0.07] hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                    title={`Open in Finder: ${activeJob.export_dir}`}
+                    className="hidden md:inline-flex items-center gap-1 rounded-md border border-[#2E2E2E] bg-[#1C1C1C] px-2 py-0.5 font-mono-tech text-[11px] text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5] cursor-pointer"
                   >
-                    <FolderOpen size={11} />
+                    <FolderOpen size={12} />
                     <span>{formatShortFolder(activeJob.export_dir)}</span>
                     <ArrowSquareOut size={10} />
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2.5">
-                  <span className="font-display text-sm font-semibold text-white">
-                    Theme Image Set Studio
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-[#F5F5F5]">
+                    New set
                   </span>
-                  <span className="hidden sm:inline-block font-mono-tech text-[11px] text-[#646b78]">
-                    · Export root: {formatShortFolder(status?.settings?.export_root_dir)}
+                  <span className="hidden sm:inline-block font-mono-tech text-[11px] text-[#737373]">
+                    {formatShortFolder(status?.settings?.export_root_dir)}
                   </span>
                 </div>
               )}
             </div>
 
-            {/* Center/Right: Horizontal Stage Switcher + Active Set Quick Tools */}
-            <div className="flex flex-wrap items-center gap-2.5">
-              {/* Compact Horizontal Workflow Bar (Quick Step Switcher) */}
-              <div className="hidden md:flex items-center rounded-full bg-white/[0.03] p-1 ring-1 ring-white/[0.07]">
-                {navItems.map((item) => {
-                  const active = activeTab === item.id
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => onSelectTab(item.id)}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all cursor-pointer",
-                        active
-                          ? "bg-[#f4f5f7] text-[#050505] font-semibold shadow-sm"
-                          : "text-[#9ca3af] hover:text-white"
-                      )}
-                    >
-                      <span className="font-mono-tech text-[10px] opacity-65">
-                        {item.step}
-                      </span>
-                      <span>{item.shortLabel}</span>
-                      {item.badge !== undefined && (
-                        <span
-                          className={cn(
-                            "rounded-full px-1.5 py-0.2 font-mono-tech text-[9px]",
-                            active
-                              ? "bg-[#050505]/15 text-[#050505]"
-                              : "bg-white/[0.08] text-[#d1d5db]"
-                          )}
-                        >
-                          {item.badge}
-                        </span>
-                      )}
-                    </button>
-                  )
-                })}
+            {activeJob && (
+              <div className="flex items-center gap-1.5">
+                <div
+                  className="flex items-center rounded-md border border-[#2E2E2E] bg-[#1C1C1C] p-0.5"
+                  title="Export mode: Picassy pin-import.csv or Images only"
+                >
+                  {(
+                    [
+                      ["csv", "CSV"],
+                      ["none", "Images only"],
+                    ] as const
+                  ).map(([modeKey, modeLabel]) => {
+                    const currentMode = activeJob.metadata_export_mode || "csv"
+                    const isModeActive = currentMode === modeKey
+                    return (
+                      <button
+                        key={modeKey}
+                        type="button"
+                        onClick={() => onSwitchJobExportMode(activeJob.id, modeKey)}
+                        className={cn(
+                          "rounded px-2.5 py-1 text-[11px] font-medium transition-colors duration-150 cursor-pointer",
+                          isModeActive
+                            ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                            : "text-[#A3A3A3] hover:text-[#F5F5F5]"
+                        )}
+                      >
+                        {modeLabel}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onChangeJobFolder(activeJob.id)}
+                  title="Change export folder"
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-[#383838] bg-[#262626] px-2.5 text-xs text-[#F5F5F5] hover:border-[#525252] cursor-pointer"
+                >
+                  <FolderOpen size={13} />
+                  <span className="hidden sm:inline">Folder…</span>
+                </button>
+
+                {activeJob.counts.completed > 0 && (
+                  <a
+                    href={getJobZipUrl(activeJob.id)}
+                    download
+                    title="Download ZIP archive"
+                    className="inline-flex h-7 items-center gap-1 rounded-md bg-[#FAFAFA] px-2.5 text-xs font-semibold text-[#121212] hover:bg-[#E5E5E5]"
+                  >
+                    <DownloadSimple size={13} weight="bold" />
+                    <span>.ZIP</span>
+                  </a>
+                )}
               </div>
-
-              {/* Active Set Export Mode & Folder Actions */}
-              {activeJob && (
-                <div className="flex items-center gap-1.5">
-                  <div
-                    className="flex items-center rounded-full bg-white/[0.03] p-0.5 ring-1 ring-white/[0.08]"
-                    title="Post-image export mode: Picassy CSV (pin-import.csv) or Images Only"
-                  >
-                    {(
-                      [
-                        ["csv", "CSV"],
-                        ["none", "Img Only"],
-                      ] as const
-                    ).map(([modeKey, modeLabel]) => {
-                      const currentMode = activeJob.metadata_export_mode || "csv"
-                      const isModeActive = currentMode === modeKey
-                      return (
-                        <button
-                          key={modeKey}
-                          type="button"
-                          onClick={() => onSwitchJobExportMode(activeJob.id, modeKey)}
-                          className={cn(
-                            "rounded-full px-2.5 py-1 text-[10px] font-mono-tech transition-all cursor-pointer",
-                            isModeActive
-                              ? "bg-amber-400 text-[#050505] font-semibold"
-                              : "text-[#9ca3af] hover:text-white"
-                          )}
-                        >
-                          {modeLabel}
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => onChangeJobFolder(activeJob.id)}
-                    title="Change export folder for this set"
-                    className="inline-flex h-7 items-center gap-1 rounded-full bg-white/[0.04] px-2.5 text-[11px] text-[#d1d5db] ring-1 ring-white/[0.08] hover:bg-white/[0.1] hover:text-white cursor-pointer"
-                  >
-                    <FolderOpen size={13} />
-                    <span className="hidden sm:inline">Folder…</span>
-                  </button>
-
-                  {activeJob.counts.completed > 0 && (
-                    <a
-                      href={getJobZipUrl(activeJob.id)}
-                      download
-                      title="Download ZIP archive of this set"
-                      className="inline-flex h-7 items-center gap-1 rounded-full bg-amber-400 px-3 text-[11px] font-semibold text-[#050505] hover:bg-amber-300"
-                    >
-                      <DownloadSimple size={13} weight="bold" />
-                      <span>.ZIP</span>
-                    </a>
-                  )}
-                </div>
-              )}
-            </div>
+            )}
           </div>
         </header>
 
         {/* Mobile Drawer */}
         {mobileSidebarOpen && (
-          <div className="fixed inset-0 z-50 flex bg-black/75 backdrop-blur-xs lg:hidden">
-            <div className="flex w-72 flex-col justify-between bg-[#0a0c10] p-4 border-r border-white/[0.1]">
+          <div className="fixed inset-0 z-50 flex bg-black/75 lg:hidden">
+            <div className="flex w-72 flex-col justify-between border-r border-[#2E2E2E] bg-[#171717] p-4">
               <div className="flex flex-1 min-h-0 flex-col gap-4">
                 <div className="flex items-center justify-between">
-                  <span className="font-display text-base font-semibold text-white">
-                    Theme Set Studio
+                  <span className="text-sm font-semibold text-[#F5F5F5]">
+                    Theme Studio
                   </span>
                   <button
                     type="button"
                     onClick={() => setMobileSidebarOpen(false)}
-                    className="rounded-lg p-1 text-[#9ca3af] hover:text-white"
+                    className="rounded-md p-1 text-[#A3A3A3] hover:text-[#F5F5F5]"
                   >
                     <X size={18} />
                   </button>
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  {navItems.map((item) => (
+                  {pipelineItems.map((item) => (
                     <button
                       key={item.id}
                       type="button"
@@ -652,32 +605,46 @@ export function StudioLayout({
                         setMobileSidebarOpen(false)
                       }}
                       className={cn(
-                        "flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-medium",
+                        "flex items-center justify-between rounded-md px-3 py-2 text-xs font-medium",
                         activeTab === item.id
-                          ? "bg-white/[0.08] text-amber-300 ring-1 ring-amber-400/30"
-                          : "text-[#9ca3af]"
+                          ? "bg-[#262626] text-[#F5F5F5]"
+                          : "text-[#A3A3A3]"
                       )}
                     >
                       <span className="flex items-center gap-2">
-                        <span className="font-mono-tech text-[10px] opacity-60">
+                        <span className="font-mono-tech text-[11px] opacity-70">
                           {item.step}
                         </span>
                         {item.icon}
                         <span>{item.label}</span>
                       </span>
                       {item.badge !== undefined && (
-                        <span className="rounded-full bg-white/[0.08] px-2 py-0.5 font-mono-tech text-[10px]">
+                        <span className="rounded bg-[#262626] px-1.5 py-0.5 font-mono-tech text-[10px]">
                           {item.badge}
                         </span>
                       )}
                     </button>
                   ))}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectTab("settings")
+                      setMobileSidebarOpen(false)
+                    }}
+                    className={cn(
+                      "mt-1 flex items-center gap-2 border-t border-[#2E2E2E] px-3 pt-3 pb-2 text-xs font-medium",
+                      activeTab === "settings" ? "text-[#F5F5F5]" : "text-[#A3A3A3]"
+                    )}
+                  >
+                    <Sliders size={15} />
+                    <span>Settings</span>
+                  </button>
                 </div>
 
-                {/* Mobile Sets List */}
-                <div className="flex flex-1 min-h-0 flex-col gap-1.5 border-t border-white/[0.07] pt-3 overflow-y-auto">
-                  <span className="px-1 font-mono-tech text-[10px] uppercase tracking-wider text-[#646b78]">
-                    Image Sets ({jobs.length})
+                <div className="flex flex-1 min-h-0 flex-col gap-1 border-t border-[#2E2E2E] pt-3 overflow-y-auto">
+                  <span className="px-1 text-xs font-medium text-[#A3A3A3]">
+                    Sets ({jobs.length})
                   </span>
                   {jobs.map((job) => (
                     <button
@@ -688,16 +655,19 @@ export function StudioLayout({
                         setMobileSidebarOpen(false)
                       }}
                       className={cn(
-                        "flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs",
+                        "flex items-center justify-between rounded-md px-2.5 py-2 text-left text-xs",
                         activeJob?.id === job.id
-                          ? "bg-white/[0.08] text-white"
-                          : "text-[#9ca3af]"
+                          ? "bg-[#262626] text-[#F5F5F5]"
+                          : "text-[#A3A3A3]"
                       )}
                     >
                       <span className="truncate">
-                        #{job.id} · {job.theme}
+                        <span className="mr-1 font-mono-tech text-[#737373]">
+                          #{job.id}
+                        </span>
+                        {job.theme}
                       </span>
-                      <span className="font-mono-tech text-[10px] text-amber-300">
+                      <span className="font-mono-tech text-[10px] text-[#A3A3A3]">
                         {job.counts.completed}/{job.counts.total}
                       </span>
                     </button>
@@ -705,7 +675,7 @@ export function StudioLayout({
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-white/[0.07]">
+              <div className="border-t border-[#2E2E2E] pt-3">
                 <StudioButton
                   variant="secondary"
                   loading={launchingCdp}
@@ -714,26 +684,26 @@ export function StudioLayout({
                   className="w-full justify-center h-8 text-xs"
                 >
                   {isCdpConnected
-                    ? `AI Browser Online (${onlineSlots.length} slot${onlineSlots.length === 1 ? "" : "s"})`
-                    : "Open AI Browser (:9222)"}
+                    ? `Browser online (${onlineSlots.length})`
+                    : "Launch browser (:9222)"}
                 </StudioButton>
               </div>
             </div>
           </div>
         )}
 
-        {/* Main Workspace Canvas */}
-        <main className="mx-auto w-full max-w-[1320px] flex-1 px-4 py-6 sm:px-8 sm:py-8">
+        {/* Main Workspace */}
+        <main className="mx-auto w-full max-w-[1360px] flex-1 px-4 py-5 sm:px-7 sm:py-6">
           {notice && (
-            <div className="mb-6 flex items-center justify-between gap-4 rounded-2xl bg-white/[0.03] px-4 py-3 ring-1 ring-white/[0.1]">
-              <div className="flex items-center gap-3 text-xs sm:text-sm text-[#f4f5f7]">
-                <StudioBadge tone={notice.tone} label="Studio" />
+            <div className="mb-5 flex items-center justify-between gap-4 rounded-lg border border-[#2E2E2E] bg-[#1C1C1C] px-4 py-2.5">
+              <div className="flex items-center gap-3 text-xs sm:text-sm text-[#F5F5F5]">
+                <StudioBadge tone={notice.tone} label="Info" />
                 <span>{notice.message}</span>
               </div>
               <button
                 type="button"
                 onClick={onDismissNotice}
-                className="rounded-lg px-2.5 py-1 text-xs text-[#9ca3af] hover:bg-white/[0.06] hover:text-white cursor-pointer"
+                className="rounded-md px-2.5 py-1 text-xs text-[#A3A3A3] hover:bg-[#262626] hover:text-[#F5F5F5] cursor-pointer"
               >
                 Dismiss
               </button>

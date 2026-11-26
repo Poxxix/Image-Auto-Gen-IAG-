@@ -13,6 +13,7 @@ import {
   FloppyDisk,
   PencilSimple,
   Star,
+  X,
 } from "@phosphor-icons/react"
 import {
   StudioPanel,
@@ -64,6 +65,8 @@ export interface GalleryScreenProps {
     }
   ) => Promise<void>
   onDeleteGeneration: (genId: number) => Promise<void>
+  onBulkDeleteGenerations?: (jobId: number, genIds: number[]) => Promise<void>
+  onReconcileFolder?: (jobId: number) => Promise<void>
   onRetryMetadata: (genId: number, useBrowserTurn: boolean) => Promise<void>
   onRetrySingleTurn: (genId: number, mutateAxes: boolean) => Promise<void>
   onOpenFolder: (jobId: number) => Promise<void>
@@ -94,6 +97,8 @@ export function GalleryScreen({
   onRemoveWatermarks,
   onUpdateMetadata,
   onDeleteGeneration,
+  onBulkDeleteGenerations,
+  onReconcileFolder,
   onRetryMetadata,
   onRetrySingleTurn,
   onOpenFolder,
@@ -116,8 +121,10 @@ export function GalleryScreen({
   const [copiedId, setCopiedId] = React.useState<number | null>(null)
   const [regeneratingAll, setRegeneratingAll] = React.useState(false)
   const [removingWatermarks, setRemovingWatermarks] = React.useState(false)
+  const [reconcilingFolder, setReconcilingFolder] = React.useState(false)
+  const [selectedGenIds, setSelectedGenIds] = React.useState<number[]>([])
+  const [bulkDeleting, setBulkDeleting] = React.useState(false)
 
-  // Set & Picassy Config Editor
   const [showCaptionConfig, setShowCaptionConfig] = React.useState(false)
   const [themeDraft, setThemeDraft] = React.useState("")
   const [primaryTagDraft, setPrimaryTagDraft] = React.useState("")
@@ -133,6 +140,7 @@ export function GalleryScreen({
 
   React.useEffect(() => {
     setPageIndex(1)
+    setSelectedGenIds([])
   }, [currentJob?.id, filterStatus, searchQuery])
 
   React.useEffect(() => {
@@ -164,13 +172,13 @@ export function GalleryScreen({
 
   if (!currentJob) {
     return (
-      <StudioPanel eyebrow="04 · SET GALLERY & EXPORTS" title="No Image Sets Yet">
-        <div className="flex flex-col items-start gap-4 py-6">
-          <p className="text-sm text-[#9ca3af]">
-            Generated image sets, Picassy captions, bulk-import CSV files (`pin-import.csv`), and ZIP archives appear here once created.
+      <StudioPanel title="No image sets yet">
+        <div className="flex flex-col items-start gap-3 py-4">
+          <p className="text-sm text-[#A3A3A3]">
+            Generated image sets, Picassy SEO fields, bulk-import CSV files (pin-import.csv), and ZIP archives appear here once created.
           </p>
           <StudioButton variant="primary" onClick={() => onNavigateTab("create")}>
-            Create First Image Set
+            Create first set
           </StudioButton>
         </div>
       </StudioPanel>
@@ -321,41 +329,41 @@ export function GalleryScreen({
   }
 
   return (
-    <div className="flex flex-col gap-8">
-      {/* Header */}
-      <div className="flex flex-col justify-between gap-6 border-b border-white/[0.06] pb-7 lg:flex-row lg:items-end">
-        <div>
-          <p className="font-mono-tech text-[11px] uppercase tracking-[0.22em] text-[#9ca3af]">
-            04 · PINTEREST CAPTION STUDIO & EXPORT ARCHIVE · SET #{currentJob.id}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-[#f4f5f7]">
+    <div className="flex flex-col gap-5">
+      {/* Top Publishing & Export Toolbar */}
+      <div className="flex flex-col justify-between gap-4 border-b border-[#2E2E2E] pb-4 lg:flex-row lg:items-end">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-[#F5F5F5]">
               {currentJob.theme}
             </h1>
-            <StudioBadge tone="sky" label={`Tag: ${jobPrimaryTag}`} />
-            <StudioBadge tone="emerald" label={`Cat: ${jobCategory}`} />
+            <StudioBadge tone="neutral" label={`Tag: ${jobPrimaryTag}`} />
+            <StudioBadge tone="neutral" label={jobCategory} />
             <button
               type="button"
               onClick={() => setShowCaptionConfig((v) => !v)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-3 py-1 text-xs text-[#d1d5db] ring-1 ring-white/[0.1] hover:bg-white/[0.1] hover:text-white cursor-pointer"
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors duration-150 cursor-pointer",
+                showCaptionConfig
+                  ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                  : "border-[#383838] bg-[#262626] text-[#F5F5F5] hover:border-[#525252]"
+              )}
             >
               <PencilSimple size={13} />
-              {showCaptionConfig ? "Close Picassy Editor" : "Edit Tag, Category & Prompt"}
+              {showCaptionConfig ? "Close SEO settings" : "Edit SEO settings"}
             </button>
           </div>
-          <p className="mt-1.5 font-mono-tech text-xs text-[#9ca3af] break-all">
-            Export Path: {currentJob.export_dir}
+          <p className="mt-1 font-mono-tech text-xs text-[#737373] break-all">
+            {currentJob.export_dir}
           </p>
         </div>
 
-        {/* Export Actions */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* 2-Way Export Mode Switch: Xuất CSV | Không (Chỉ ảnh) */}
-          <div className="flex items-center rounded-full bg-white/[0.04] p-1 ring-1 ring-white/[0.1]">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center rounded-md border border-[#2E2E2E] bg-[#1C1C1C] p-0.5">
             {(
               [
-                ["csv", "Xuất CSV (pin-import.csv)"],
-                ["none", "Không (Chỉ ảnh)"],
+                ["csv", "Xuất CSV"],
+                ["none", "Chỉ ảnh"],
               ] as const
             ).map(([mKey, mLabel]) => (
               <button
@@ -365,10 +373,10 @@ export function GalleryScreen({
                   onUpdateJob(currentJob.id, { metadata_export_mode: mKey })
                 }
                 className={cn(
-                  "rounded-full px-3 py-1.5 text-xs font-medium transition-all cursor-pointer",
+                  "rounded px-2.5 py-1 text-xs font-medium transition-colors duration-150 cursor-pointer",
                   exportMode === mKey
-                    ? "bg-amber-400 text-[#050505] font-semibold"
-                    : "text-[#9ca3af] hover:text-white"
+                    ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                    : "text-[#A3A3A3] hover:text-[#F5F5F5]"
                 )}
               >
                 {mLabel}
@@ -378,23 +386,30 @@ export function GalleryScreen({
 
           <StudioButton
             variant="secondary"
-            onClick={() => onChangeJobFolder(currentJob.id)}
+            onClick={() => onOpenFolder(currentJob.id)}
+            icon={<FolderOpen size={14} />}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <FolderOpen size={15} weight="light" />
-              Change Folder…
-            </span>
+            Open in Finder
           </StudioButton>
 
-          <StudioButton
-            variant="secondary"
-            onClick={() => onOpenFolder(currentJob.id)}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <FolderOpen size={15} weight="light" />
-              Open in Finder
-            </span>
-          </StudioButton>
+          {onReconcileFolder && (
+            <StudioButton
+              variant="secondary"
+              loading={reconcilingFolder}
+              onClick={async () => {
+                setReconcilingFolder(true)
+                try {
+                  await onReconcileFolder(currentJob.id)
+                } finally {
+                  setReconcilingFolder(false)
+                }
+              }}
+              icon={<ArrowsClockwise size={14} />}
+              title="Scan folder for files deleted in Finder, re-sequence -1..N, and rewrite pin-import.csv"
+            >
+              Sync folder &amp; CSV
+            </StudioButton>
+          )}
 
           {onRemoveWatermarks &&
             currentJob.generations.some((g) => Boolean(g.image_file)) && (
@@ -402,11 +417,9 @@ export function GalleryScreen({
                 variant="secondary"
                 loading={removingWatermarks}
                 onClick={handleRemoveWatermarksClick}
+                icon={<Sparkle size={14} />}
               >
-                <span className="inline-flex items-center gap-1.5">
-                  <Sparkle size={15} weight="light" />
-                  Clean Watermarks
-                </span>
+                Clean watermarks
               </StudioButton>
             )}
 
@@ -414,10 +427,10 @@ export function GalleryScreen({
             <a
               href={getJobCsvUrl(currentJob.id)}
               download={`${currentJob.slug || "set"}-pin-import.csv`}
-              className="inline-flex h-10 items-center gap-1.5 rounded-full bg-amber-400/15 px-4 text-xs font-semibold text-amber-200 ring-1 ring-amber-400/35 hover:bg-amber-400/25"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[#383838] bg-[#262626] px-3 text-xs font-medium text-[#F5F5F5] transition-colors duration-150 hover:border-[#525252] hover:bg-[#303030]"
               title="Download 8-column Picassy bulk-import CSV (pin-import.csv)"
             >
-              <Table size={15} weight="duotone" />
+              <Table size={14} />
               pin-import.csv
             </a>
           )}
@@ -425,62 +438,70 @@ export function GalleryScreen({
           <a
             href={getJobZipUrl(currentJob.id)}
             download
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-[#f4f5f7] px-5 text-xs font-semibold text-[#050505] shadow-[0_6px_22px_rgba(255,255,255,0.14)] hover:bg-white"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#FAFAFA] px-3.5 text-xs font-semibold text-[#121212] transition-colors duration-150 hover:bg-[#E5E5E5]"
           >
-            <DownloadSimple size={15} weight="bold" />
-            Download Set (.ZIP)
+            <DownloadSimple size={14} weight="bold" />
+            Download .ZIP
           </a>
 
           <button
             type="button"
             onClick={() => onDeleteJob(currentJob.id, false)}
             aria-label="Delete set from history"
-            className="flex size-10 items-center justify-center rounded-full bg-white/[0.04] text-[#9ca3af] ring-1 ring-white/[0.08] hover:bg-rose-500/15 hover:text-rose-300 cursor-pointer"
+            className="flex size-9 items-center justify-center rounded-md border border-[#2E2E2E] bg-[#1C1C1C] text-[#A3A3A3] hover:border-[#EF4444]/35 hover:bg-[#EF4444]/15 hover:text-[#FCA5A5] cursor-pointer"
             title="Remove set record (keeps exported files on disk)"
           >
-            <Trash size={15} weight="light" />
+            <Trash size={14} />
           </button>
         </div>
       </div>
 
-      {/* Expandable Set Name & Post-Image Caption Prompt Panel */}
+      {/* Collapsible SEO Settings */}
       {showCaptionConfig && (
         <StudioPanel
-          eyebrow="PICASSY SEO DATA & BATCH CAPTION PROMPT"
-          title="Configure Primary Tag, Category & Metadata Prompt"
+          title="Picassy tag, category & batch caption instructions"
+          headerRight={
+            <button
+              type="button"
+              onClick={() => onChangeJobFolder(currentJob.id)}
+              className="inline-flex items-center gap-1 text-xs text-[#F5F5F5] hover:underline cursor-pointer"
+            >
+              <FolderOpen size={13} /> Change export folder…
+            </button>
+          }
         >
           <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-[#9ca3af]">
-                  Set Theme / Name
+            <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-[#A3A3A3]">
+                  Set name
                 </label>
                 <input
                   type="text"
                   value={themeDraft}
                   onChange={(e) => setThemeDraft(e.target.value)}
-                  className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-sm text-white ring-1 ring-white/[0.1]"
+                  className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-sm text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-amber-200/90">
-                  Tag chính (Primary Keyword)
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-[#A3A3A3]">
+                  Tag chính (Primary keyword)
                 </label>
                 <input
                   type="text"
                   value={primaryTagDraft}
                   onChange={(e) => setPrimaryTagDraft(e.target.value)}
-                  className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-sm text-white ring-1 ring-white/[0.1]"
+                  className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-sm text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-emerald-200/90">
-                  Category (1 per Job)
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-[#A3A3A3]">
+                  Category (1 per set)
                 </label>
                 <select
                   value={categoryDraft}
                   onChange={(e) => setCategoryDraft(e.target.value)}
-                  className="h-10 rounded-xl bg-[#0e1117] px-3 text-xs text-white ring-1 ring-white/[0.1]"
+                  className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
                 >
                   {categoryOptions.map((cat) => (
                     <option key={cat} value={cat}>
@@ -489,21 +510,21 @@ export function GalleryScreen({
                   ))}
                 </select>
               </div>
-              <div className="sm:col-span-3 flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-amber-200/90">
-                  Custom Picassy Metadata Instructions
+              <div className="sm:col-span-3 flex flex-col gap-1">
+                <label className="text-xs font-medium text-[#A3A3A3]">
+                  Metadata prompt instructions
                 </label>
                 <input
                   type="text"
                   value={captionPromptDraft}
                   onChange={(e) => setCaptionPromptDraft(e.target.value)}
-                  placeholder="Instructions for Title (<=60), Description (<=160), and Alt Text (100-125)..."
-                  className="h-10 rounded-xl bg-white/[0.04] px-3.5 text-xs text-white ring-1 ring-white/[0.1]"
+                  placeholder="Instructions for Title (<=60), Sentence-case Description (<=160), and Alt text (100–125)…"
+                  className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
                 />
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#2E2E2E] pt-3">
               <div className="flex flex-wrap items-center gap-2">
                 <StudioButton
                   variant="secondary"
@@ -511,7 +532,7 @@ export function GalleryScreen({
                   onClick={() => handleRegenerateAll(false)}
                   icon={<ArrowsClockwise size={14} />}
                 >
-                  Regenerate All Captions (Instant Pin SEO)
+                  Regenerate all captions (instant)
                 </StudioButton>
                 <StudioButton
                   variant="secondary"
@@ -519,7 +540,7 @@ export function GalleryScreen({
                   onClick={() => handleRegenerateAll(true)}
                   icon={<Sparkle size={14} />}
                 >
-                  Run AI Browser Prompt for All Images (:9222)
+                  Rewrite all via AI browser
                 </StudioButton>
               </div>
 
@@ -528,7 +549,7 @@ export function GalleryScreen({
                   variant="secondary"
                   onClick={() => setShowCaptionConfig(false)}
                 >
-                  Close
+                  Cancel
                 </StudioButton>
                 <StudioButton
                   variant="primary"
@@ -536,7 +557,7 @@ export function GalleryScreen({
                   onClick={handleSaveJobPrompt}
                   icon={<FloppyDisk size={14} />}
                 >
-                  Save Prompt & Theme
+                  Save SEO settings
                 </StudioButton>
               </div>
             </div>
@@ -544,19 +565,19 @@ export function GalleryScreen({
         </StudioPanel>
       )}
 
-      {/* Set Selector & Filter Bar */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Filter Pills & Search */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-[#2E2E2E] bg-[#1C1C1C] p-2.5">
+        <div className="flex flex-wrap items-center gap-1">
           {(
             [
               ["all", `All (${currentJob.counts.total})`],
               ["completed", `Completed (${currentJob.counts.completed})`],
-              ["peak", `Peak ★ (${peakCount})`],
+              ["peak", `★ Peak (${peakCount})`],
               [
                 "metadata_pending",
-                `Meta Pending (${currentJob.counts.metadata_pending})`,
+                `Metadata pending (${currentJob.counts.metadata_pending})`,
               ],
-              ["duplicates", `Near-Duplicates (${currentJob.counts.duplicates})`],
+              ["duplicates", `Duplicates (${currentJob.counts.duplicates})`],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -564,10 +585,10 @@ export function GalleryScreen({
               type="button"
               onClick={() => setFilterStatus(key)}
               className={cn(
-                "rounded-full px-3.5 py-1.5 text-xs font-medium ring-1 transition-colors cursor-pointer",
+                "rounded-md px-2.5 py-1 text-xs font-medium transition-colors duration-150 cursor-pointer",
                 filterStatus === key
-                  ? "bg-[#f4f5f7] text-[#050505] ring-white"
-                  : "bg-white/[0.03] text-[#9ca3af] ring-white/[0.07] hover:text-white"
+                  ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                  : "text-[#A3A3A3] hover:bg-[#262626] hover:text-[#F5F5F5]"
               )}
             >
               {label}
@@ -575,25 +596,33 @@ export function GalleryScreen({
           ))}
         </div>
 
-        <div className="relative flex w-full sm:w-72 items-center">
+        <div className="relative flex w-full sm:w-64 items-center">
           <MagnifyingGlass
-            size={15}
-            weight="light"
-            className="pointer-events-none absolute left-3.5 text-[#9ca3af]"
+            size={13}
+            className="pointer-events-none absolute left-2.5 text-[#737373]"
           />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter by title, caption, hashtags..."
-            className="h-9 w-full rounded-full bg-white/[0.04] pl-9 pr-4 text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
+            placeholder="Filter by title, description, file…"
+            className="h-8 w-full rounded-md border border-[#2E2E2E] bg-[#262626] pl-8 pr-7 text-xs text-[#F5F5F5] placeholder:text-[#737373] outline-none focus:border-[#A3A3A3]"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 text-[#737373] hover:text-[#F5F5F5] cursor-pointer"
+            >
+              <X size={12} />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Multi-Set Switcher Strip when >1 sets exist */}
+      {/* Multi-Set Switcher */}
       {jobs.length > 1 && (
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
           {jobs.map((j) => {
             const active = j.id === currentJob.id
             return (
@@ -602,341 +631,409 @@ export function GalleryScreen({
                 type="button"
                 onClick={() => onSelectJob(j)}
                 className={cn(
-                  "shrink-0 rounded-2xl px-4 py-2 text-xs font-medium ring-1 transition-all cursor-pointer",
+                  "shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors duration-150 cursor-pointer",
                   active
-                    ? "bg-white/[0.1] text-white ring-white/[0.25]"
-                    : "bg-white/[0.025] text-[#9ca3af] ring-white/[0.06] hover:text-white"
+                    ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                    : "border-[#2E2E2E] bg-[#1C1C1C] text-[#A3A3A3] hover:text-[#F5F5F5]"
                 )}
               >
-                Set #{j.id} · {j.theme} ({j.counts.completed}/{j.counts.total})
+                <span className="mr-1 font-mono-tech opacity-75">#{j.id}</span>
+                {j.theme} ({j.counts.completed}/{j.counts.total})
               </button>
             )
           })}
         </div>
       )}
 
-      {/* Gallery Grid (Paginated for 100–1000 images) */}
+      {/* Bulk Delete Bar */}
+      {selectedGenIds.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#EF4444]/35 bg-[#1C1C1C] px-4 py-2.5 text-xs">
+          <span className="text-[#F5F5F5]">
+            Selected <strong>{selectedGenIds.length}</strong> image(s) — deleting removes files on disk, re-numbers remaining files (-1..N), and updates pin-import.csv.
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedGenIds([])}
+              className="rounded border border-[#383838] bg-[#262626] px-2.5 py-1 text-xs text-[#F5F5F5] cursor-pointer"
+            >
+              Unselect
+            </button>
+            <button
+              type="button"
+              disabled={bulkDeleting}
+              onClick={async () => {
+                const ids = [...selectedGenIds]
+                setBulkDeleting(true)
+                try {
+                  setSelectedGenIds([])
+                  if (onBulkDeleteGenerations) {
+                    await onBulkDeleteGenerations(currentJob.id, ids)
+                  } else {
+                    for (const gid of ids) {
+                      await onDeleteGeneration(gid)
+                    }
+                  }
+                } finally {
+                  setBulkDeleting(false)
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded bg-[#EF4444] px-3 py-1 font-semibold text-white hover:bg-[#DC2626] cursor-pointer"
+            >
+              <Trash size={13} weight="bold" />
+              {bulkDeleting
+                ? "Deleting…"
+                : `Delete selected (${selectedGenIds.length})`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Contact-Sheet Grid */}
       <StudioPagination
         totalItems={filteredGenerations.length}
         pageSize={pageSize}
         pageIndex={pageIndex}
         onPageChange={setPageIndex}
-        itemLabel="items"
+        itemLabel="frames"
       />
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
         {filteredGenerations
           .slice((pageIndex - 1) * pageSize, pageIndex * pageSize)
           .map((gen) => {
-          const hasImage = Boolean(gen.image_file)
-          const titleVal = titleDrafts[gen.id] ?? gen.title
-          const descVal = descDrafts[gen.id] ?? gen.description
-          const altVal = altDrafts[gen.id] ?? (gen.alt_text || "")
-          const kwLower = jobPrimaryTag.toLowerCase()
-          const titleOk =
-            titleVal.length > 0 &&
-            titleVal.length <= 60 &&
-            (!kwLower || titleVal.toLowerCase().startsWith(kwLower))
-          const descOk =
-            descVal.length > 0 &&
-            descVal.length <= 160 &&
-            !descVal.includes("#") &&
-            (!kwLower || descVal.toLowerCase().includes(kwLower))
-          const altOk =
-            altVal.length >= 100 &&
-            altVal.length <= 125 &&
-            (!kwLower || altVal.toLowerCase().includes(kwLower))
-          const isDirty =
-            titleVal !== (gen.title || "") ||
-            descVal !== (gen.description || "") ||
-            altVal !== (gen.alt_text || "")
+            const hasImage = Boolean(gen.image_file)
+            const titleVal = titleDrafts[gen.id] ?? gen.title
+            const descVal = descDrafts[gen.id] ?? gen.description
+            const altVal = altDrafts[gen.id] ?? (gen.alt_text || "")
+            const kwLower = jobPrimaryTag.toLowerCase()
+            const titleOk =
+              titleVal.length > 0 &&
+              titleVal.length <= 60 &&
+              (!kwLower || titleVal.toLowerCase().startsWith(kwLower))
+            const descOk =
+              descVal.length > 0 &&
+              descVal.length <= 160 &&
+              !descVal.includes("#") &&
+              (!kwLower || descVal.toLowerCase().includes(kwLower))
+            const altOk =
+              altVal.length >= 100 &&
+              altVal.length <= 125 &&
+              (!kwLower || altVal.toLowerCase().includes(kwLower))
+            const isDirty =
+              titleVal !== (gen.title || "") ||
+              descVal !== (gen.description || "") ||
+              altVal !== (gen.alt_text || "")
 
-          return (
-            <div
-              key={gen.id}
-              className="flex flex-col justify-between overflow-hidden rounded-3xl bg-[#0b0d11]/90 p-5 ring-1 ring-white/[0.08] transition-all hover:ring-white/[0.16]"
-            >
-              <div>
-                {/* Top Header */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-mono-tech text-xs font-semibold text-white">
-                      #{String(gen.index_num).padStart(3, "0")}
-                    </span>
-                    <span className="font-mono-tech text-[11px] text-[#9ca3af] truncate">
-                      {gen.image_file || "Not generated yet"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleTogglePeak(gen)}
-                      title={`Peak of Picassy: ${gen.is_peak ? "TRUE (click to unset)" : "FALSE (click to mark TRUE in CSV)"}`}
-                      className={cn(
-                        "inline-flex h-7 items-center gap-1 rounded-full px-2.5 font-mono-tech text-[10px] font-semibold ring-1 transition-all cursor-pointer",
-                        gen.is_peak
-                          ? "bg-amber-400 text-[#050505] ring-amber-300 shadow-[0_2px_10px_rgba(251,191,36,0.28)]"
-                          : "bg-white/[0.04] text-[#9ca3af] ring-white/[0.08] hover:bg-white/[0.1] hover:text-amber-200"
-                      )}
-                    >
-                      <Star size={12} weight={gen.is_peak ? "fill" : "regular"} />
-                      Peak
-                    </button>
-                    <StudioBadge
-                      tone={
-                        gen.status === "completed"
-                          ? "emerald"
-                          : gen.status === "metadata_pending"
-                            ? "amber"
-                            : gen.status === "failed"
-                              ? "rose"
-                              : "neutral"
-                      }
-                      label={gen.status.replace("_", " ")}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onDeleteGeneration(gen.id)}
-                      title="Delete this image and resequence pin-import.csv"
-                      className="flex size-7 items-center justify-center rounded-full bg-white/[0.04] text-[#646b78] hover:bg-rose-500/20 hover:text-rose-300 cursor-pointer"
-                    >
-                      <Trash size={13} />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Image Preview */}
-                <div className="mt-3 relative aspect-[4/3] w-full overflow-hidden rounded-2xl bg-black/50 ring-1 ring-white/[0.07]">
-                  {hasImage ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedGen(gen)
-                        setModalTab("details")
-                      }}
-                      className="group block h-full w-full cursor-pointer"
-                    >
-                      <img
-                        src={getGenerationImageUrl(gen.id, gen.md5 || gen.image_file)}
-                        alt={gen.title || gen.prompt_final}
-                        loading="lazy"
-                        decoding="async"
-                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-                      />
-                    </button>
-                  ) : (
-                    <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-[#646b78]">
-                      <Sparkle size={20} weight="light" />
-                      <span>No image file yet ({gen.status})</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Near-Duplicate Warning if present */}
-                {gen.duplicate_warning && (
-                  <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-amber-500/12 px-3 py-2 text-[11px] text-amber-200 ring-1 ring-amber-400/30">
-                    <span className="inline-flex items-center gap-1.5">
-                      <WarningCircle size={14} weight="fill" />
-                      {gen.duplicate_warning}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onRetrySingleTurn(gen.id, true)}
-                      className="rounded-full bg-amber-400/20 px-2.5 py-0.5 font-medium text-amber-100 hover:bg-amber-400/30 cursor-pointer"
-                    >
-                      Mutate & Redo
-                    </button>
-                  </div>
+            return (
+              <div
+                key={gen.id}
+                className={cn(
+                  "flex flex-col justify-between overflow-hidden rounded-lg border bg-[#1C1C1C] p-4 transition-colors duration-150",
+                  gen.is_peak
+                    ? "border-[#A3A3A3]"
+                    : "border-[#2E2E2E] hover:border-[#404040]"
                 )}
-
-                {/* Inline Editable Picassy SEO Fields: Title (<=60), Description (<=160), Alt Text (100-125) */}
-                {exportMode !== "none" ? (
-                  <div className="mt-4 flex flex-col gap-2.5">
-                    <div>
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
-                          Title ({titleVal.length}/60)
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              "font-mono-tech text-[10px]",
-                              titleOk ? "text-emerald-300" : "text-amber-300"
-                            )}
-                          >
-                            {titleOk ? "✓ Prefix+Len" : "Check Prefix/60"}
-                          </span>
-                          {savingId === gen.id ? (
-                            <span className="font-mono-tech text-[10px] text-sky-300">
-                              Syncing…
-                            </span>
-                          ) : savedId === gen.id ? (
-                            <span className="font-mono-tech text-[10px] text-emerald-300">
-                              ✓ Saved
-                            </span>
-                          ) : isDirty ? (
-                            <button
-                              type="button"
-                              onClick={() => handleSaveMeta(gen, true)}
-                              className="inline-flex items-center gap-1 font-mono-tech text-[10px] text-emerald-300 hover:underline cursor-pointer"
-                            >
-                              <FloppyDisk size={11} />
-                              Save
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
+              >
+                <div>
+                  {/* Frame Header */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
                       <input
-                        type="text"
-                        value={titleVal}
-                        onChange={(e) =>
-                          setTitleDrafts((prev) => ({
-                            ...prev,
-                            [gen.id]: e.target.value,
-                          }))
+                        type="checkbox"
+                        checked={selectedGenIds.includes(gen.id)}
+                        onChange={() =>
+                          setSelectedGenIds((prev) =>
+                            prev.includes(gen.id)
+                              ? prev.filter((x) => x !== gen.id)
+                              : [...prev, gen.id]
+                          )
                         }
-                        onBlur={() => handleSaveMeta(gen)}
-                        placeholder={`Starts with "${jobPrimaryTag}" (<=60 chars)...`}
-                        className="mt-1 h-9 w-full rounded-xl bg-white/[0.03] px-3 text-xs font-medium text-white ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
+                        aria-label={`Select image ${gen.index_num}`}
+                        className="size-3.5 shrink-0 accent-[#FAFAFA] cursor-pointer"
                       />
+                      <span className="font-mono-tech text-xs font-semibold text-[#F5F5F5]">
+                        #{String(gen.index_num).padStart(2, "0")}
+                      </span>
+                      <span className="font-mono-tech text-[11px] text-[#737373] truncate">
+                        {gen.image_file || "Pending"}
+                      </span>
                     </div>
 
-                    <div>
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
-                          Description ({descVal.length}/160)
-                        </label>
-                        <span
-                          className={cn(
-                            "font-mono-tech text-[10px]",
-                            descOk ? "text-emerald-300" : "text-amber-300"
-                          )}
-                        >
-                          {descOk ? "✓ Clean Prose" : "Check Keyword/160"}
-                        </span>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={descVal}
-                        onChange={(e) =>
-                          setDescDrafts((prev) => ({
-                            ...prev,
-                            [gen.id]: e.target.value,
-                          }))
-                        }
-                        onBlur={() => handleSaveMeta(gen)}
-                        placeholder={`Complete sentence containing "${jobPrimaryTag}" (<=160 chars, no #)...`}
-                        className="mt-1 w-full rounded-xl bg-white/[0.03] p-2.5 text-xs text-[#d1d5db] ring-1 ring-white/[0.08] outline-none focus:ring-2 focus:ring-white/30"
-                      />
-                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePeak(gen)}
+                        title={`Peak of Picassy: ${
+                          gen.is_peak
+                            ? "TRUE in CSV (click to unset)"
+                            : "FALSE in CSV (click to mark TRUE)"
+                        }`}
+                        className={cn(
+                          "inline-flex h-6.5 items-center gap-1 rounded border px-2 text-[11px] font-semibold transition-colors duration-150 cursor-pointer",
+                          gen.is_peak
+                            ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212]"
+                            : "border-[#2E2E2E] bg-[#262626] text-[#A3A3A3] hover:border-[#525252] hover:text-[#F5F5F5]"
+                        )}
+                      >
+                        <Star size={11} weight={gen.is_peak ? "fill" : "regular"} />
+                        Peak
+                      </button>
 
-                    <div>
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="font-mono-tech text-[10px] uppercase tracking-wider text-sky-200/90">
-                          Alt Text ({altVal.length}/100–125)
-                        </label>
-                        <span
-                          className={cn(
-                            "font-mono-tech text-[10px]",
-                            altOk ? "text-emerald-300" : "text-rose-300"
-                          )}
-                        >
-                          {altOk ? "✓ 100–125" : `${altVal.length} chars (need 100–125)`}
-                        </span>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={altVal}
-                        onChange={(e) =>
-                          setAltDrafts((prev) => ({
-                            ...prev,
-                            [gen.id]: e.target.value,
-                          }))
-                        }
-                        onBlur={() => handleSaveMeta(gen)}
-                        placeholder="Truthful screen-reader visual description (100-125 chars)..."
-                        className="mt-1 w-full rounded-xl bg-white/[0.025] p-2.5 text-xs text-sky-100 ring-1 ring-white/[0.07] outline-none focus:ring-2 focus:ring-sky-400/30"
-                      />
+                      <button
+                        type="button"
+                        onClick={() => onDeleteGeneration(gen.id)}
+                        title="Delete image, re-sequence folder & update pin-import.csv"
+                        className="flex size-6.5 items-center justify-center rounded border border-[#2E2E2E] bg-[#262626] text-[#737373] hover:border-[#EF4444]/35 hover:bg-[#EF4444]/15 hover:text-[#FCA5A5] cursor-pointer"
+                      >
+                        <Trash size={12} />
+                      </button>
                     </div>
                   </div>
-                ) : (
-                  <p className="mt-3 text-[11px] text-[#646b78]">
-                    Image-only export mode active. Switch to &quot;Xuất CSV&quot; above to edit &amp; export <code className="text-[#9ca3af]">pin-import.csv</code>.
-                  </p>
-                )}
-              </div>
 
-              {/* Card Bottom Bar: Copy Pin Caption, AI Re-write, & Downloads */}
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => handleCopyText(gen.id, buildPinCopyBlock(gen))}
-                    className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2.5 py-1 text-[11px] font-medium text-amber-200 ring-1 ring-amber-400/25 hover:bg-amber-400/25 cursor-pointer"
-                    title="Copy Picassy Tag, Category, Title, Description, Alt text"
-                  >
-                    {copiedId === gen.id ? (
-                      <>
-                        <Check size={12} weight="bold" className="text-emerald-300" />
-                        Copied SEO
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={12} weight="light" />
-                        Copy SEO
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onRetryMetadata(gen.id, true)}
-                    className="inline-flex items-center gap-1 rounded-full bg-white/[0.04] px-2.5 py-1 text-[11px] text-[#d1d5db] hover:bg-white/[0.1] hover:text-white cursor-pointer"
-                    title="Send post-image prompt to AI Browser (:9222) to write a fresh Pin Caption & Description"
-                  >
-                    <Sparkle size={12} weight="light" className="text-amber-300" />
-                    AI Prompt
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onRetryMetadata(gen.id, false)}
-                    className="inline-flex items-center gap-1 rounded-full bg-white/[0.04] px-2 py-1 text-[11px] text-[#9ca3af] hover:text-white cursor-pointer"
-                    title="Instant Pin SEO Caption & Description synthesis"
-                  >
-                    <ArrowsClockwise size={12} weight="light" />
-                  </button>
-                </div>
-
-                {hasImage && (
-                  <div className="flex items-center gap-1.5">
-                    {exportMode === "csv" && (
+                  {/* Neutral #121212 Image Frame */}
+                  <div className="mt-2.5 relative aspect-[4/3] w-full overflow-hidden rounded-md border border-[#2E2E2E] bg-[#121212]">
+                    {hasImage ? (
                       <button
                         type="button"
                         onClick={() => {
                           setSelectedGen(gen)
-                          setModalTab("csv")
+                          setModalTab("details")
                         }}
-                        className="rounded-full bg-white/[0.05] px-2.5 py-1 font-mono-tech text-[10px] text-[#d1d5db] hover:bg-white/[0.12] cursor-pointer"
-                        title="Preview exact CSV row in pin-import.csv"
+                        className="block h-full w-full cursor-pointer"
                       >
-                        .CSV Row
+                        <img
+                          src={getGenerationImageUrl(
+                            gen.id,
+                            gen.md5 || gen.image_file
+                          )}
+                          alt={gen.title || gen.prompt_final}
+                          loading="lazy"
+                          decoding="async"
+                          className="h-full w-full object-cover"
+                        />
                       </button>
+                    ) : (
+                      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-[#737373]">
+                        <Sparkle size={18} />
+                        <span>No image file yet ({gen.status})</span>
+                      </div>
                     )}
-                    <a
-                      href={getGenerationImageUrl(gen.id, gen.updated_at, true)}
-                      download={gen.image_file}
-                      className="inline-flex items-center gap-1 rounded-full bg-[#f4f5f7] px-3 py-1 text-[11px] font-medium text-[#050505] hover:bg-white"
-                    >
-                      <DownloadSimple size={12} weight="bold" />
-                      Image
-                    </a>
                   </div>
-                )}
+
+                  {gen.duplicate_warning && (
+                    <div className="mt-2.5 flex items-center justify-between gap-2 rounded-md border border-[#404040] bg-[#262626] px-2.5 py-1.5 text-[11px] text-[#F5F5F5]">
+                      <span className="inline-flex items-center gap-1.5 truncate">
+                        <WarningCircle size={13} weight="fill" />
+                        {gen.duplicate_warning}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onRetrySingleTurn(gen.id, true)}
+                        className="shrink-0 rounded bg-[#FAFAFA] px-2 py-0.5 font-semibold text-[#121212] cursor-pointer"
+                      >
+                        Mutate &amp; redo
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Inline SEO Editors */}
+                  {exportMode !== "none" ? (
+                    <div className="mt-3 flex flex-col gap-2">
+                      <div>
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <label className="font-medium text-[#A3A3A3]">
+                            Title
+                          </label>
+                          <div className="flex items-center gap-2">
+                            {savingId === gen.id ? (
+                              <span className="font-mono-tech text-[#A3A3A3]">
+                                Saving…
+                              </span>
+                            ) : savedId === gen.id ? (
+                              <span className="font-mono-tech text-[#F5F5F5]">
+                                Saved
+                              </span>
+                            ) : isDirty ? (
+                              <button
+                                type="button"
+                                onClick={() => handleSaveMeta(gen, true)}
+                                className="inline-flex items-center gap-1 font-medium text-[#F5F5F5] hover:underline cursor-pointer"
+                              >
+                                <FloppyDisk size={11} />
+                                Save
+                              </button>
+                            ) : null}
+                            <span
+                              className={cn(
+                                "font-mono-tech tabular-nums",
+                                titleOk ? "text-[#A3A3A3]" : "text-[#FCA5A5]"
+                              )}
+                              title={
+                                titleOk
+                                  ? "Starts with keyword and within 60 chars"
+                                  : `Start with "${jobPrimaryTag}" and keep <= 60 chars`
+                              }
+                            >
+                              {titleVal.length}/60
+                            </span>
+                          </div>
+                        </div>
+                        <input
+                          type="text"
+                          value={titleVal}
+                          onChange={(e) =>
+                            setTitleDrafts((prev) => ({
+                              ...prev,
+                              [gen.id]: e.target.value,
+                            }))
+                          }
+                          onBlur={() => handleSaveMeta(gen)}
+                          placeholder={`Starts with "${jobPrimaryTag}" (<=60 chars)…`}
+                          className="mt-1 h-8 w-full rounded-md border border-[#2E2E2E] bg-[#262626] px-2.5 text-xs font-medium text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <label className="font-medium text-[#A3A3A3]">
+                            Description
+                          </label>
+                          <span
+                            className={cn(
+                              "font-mono-tech tabular-nums",
+                              descOk ? "text-[#A3A3A3]" : "text-[#FCA5A5]"
+                            )}
+                          >
+                            {descVal.length}/160
+                          </span>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={descVal}
+                          onChange={(e) =>
+                            setDescDrafts((prev) => ({
+                              ...prev,
+                              [gen.id]: e.target.value,
+                            }))
+                          }
+                          onBlur={() => handleSaveMeta(gen)}
+                          placeholder={`Sentence containing "${jobPrimaryTag.toLowerCase()}" (<=160 chars, no #)…`}
+                          className="mt-1 w-full rounded-md border border-[#2E2E2E] bg-[#262626] p-2 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <label className="font-medium text-[#A3A3A3]">
+                            Alt text
+                          </label>
+                          <span
+                            className={cn(
+                              "font-mono-tech tabular-nums",
+                              altOk ? "text-[#A3A3A3]" : "text-[#FCA5A5]"
+                            )}
+                          >
+                            {altVal.length}/100–125
+                          </span>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={altVal}
+                          onChange={(e) =>
+                            setAltDrafts((prev) => ({
+                              ...prev,
+                              [gen.id]: e.target.value,
+                            }))
+                          }
+                          onBlur={() => handleSaveMeta(gen)}
+                          placeholder="Visual description for screen readers (100–125 chars)…"
+                          className="mt-1 w-full rounded-md border border-[#2E2E2E] bg-[#262626] p-2 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-xs text-[#737373]">
+                      Images-only mode active. Switch to &ldquo;Xuất CSV&rdquo; above to edit and export pin-import.csv.
+                    </p>
+                  )}
+                </div>
+
+                {/* Card Footer */}
+                <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-[#2E2E2E] pt-2.5">
+                  <div className="flex flex-wrap items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(gen.id, buildPinCopyBlock(gen))}
+                      className="inline-flex items-center gap-1 rounded border border-[#383838] bg-[#262626] px-2 py-1 text-[11px] font-medium text-[#F5F5F5] hover:border-[#525252] cursor-pointer"
+                      title="Copy Picassy Tag, Category, Title, Description, Alt text"
+                    >
+                      {copiedId === gen.id ? (
+                        <>
+                          <Check size={11} weight="bold" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={11} />
+                          Copy SEO
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onRetryMetadata(gen.id, true)}
+                      className="inline-flex items-center gap-1 rounded border border-[#2E2E2E] bg-[#262626] px-2 py-1 text-[11px] text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
+                      title="Rewrite caption via AI browser"
+                    >
+                      <Sparkle size={11} />
+                      AI rewrite
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onRetryMetadata(gen.id, false)}
+                      className="flex size-6.5 items-center justify-center rounded border border-[#2E2E2E] bg-[#262626] text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
+                      title="Instant grammatical SEO synthesis"
+                    >
+                      <ArrowsClockwise size={11} />
+                    </button>
+                  </div>
+
+                  {hasImage && (
+                    <div className="flex items-center gap-1">
+                      {exportMode === "csv" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedGen(gen)
+                            setModalTab("csv")
+                          }}
+                          className="rounded border border-[#2E2E2E] bg-[#171717] px-2 py-1 font-mono-tech text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5] cursor-pointer"
+                          title="Preview exact CSV row in pin-import.csv"
+                        >
+                          CSV row
+                        </button>
+                      )}
+                      <a
+                        href={getGenerationImageUrl(
+                          gen.id,
+                          gen.updated_at,
+                          true
+                        )}
+                        download={gen.image_file}
+                        className="inline-flex items-center gap-1 rounded bg-[#FAFAFA] px-2.5 py-1 text-[11px] font-semibold text-[#121212] hover:bg-[#E5E5E5]"
+                      >
+                        <DownloadSimple size={11} weight="bold" />
+                        Save
+                      </a>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )
-        })}
+            )
+          })}
       </div>
 
       <StudioPagination
@@ -944,10 +1041,10 @@ export function GalleryScreen({
         pageSize={pageSize}
         pageIndex={pageIndex}
         onPageChange={setPageIndex}
-        itemLabel="items"
+        itemLabel="frames"
       />
 
-      {/* Full Image, Prompt Editor, Pin Caption & Sidecar JSON Inspector Modal */}
+      {/* Inspector Modal */}
       <Dialog
         open={Boolean(selectedGen)}
         onOpenChange={(open) => !open && setSelectedGen(null)}
@@ -959,49 +1056,51 @@ export function GalleryScreen({
                 <div className="flex flex-wrap items-center justify-between gap-2 pr-6">
                   <div>
                     <DialogTitle>
-                      #{String(selectedGen.index_num).padStart(3, "0")} ·{" "}
+                      #{String(selectedGen.index_num).padStart(2, "0")} —{" "}
                       {selectedGen.title || selectedGen.image_file}
                     </DialogTitle>
-                    <DialogDescription>
-                      {selectedGen.width}×{selectedGen.height} · {selectedGen.model} ·{" "}
-                      {selectedGen.image_file}
+                    <DialogDescription className="font-mono-tech text-xs">
+                      {selectedGen.width}×{selectedGen.height} ·{" "}
+                      {selectedGen.model} · {selectedGen.image_file}
                     </DialogDescription>
                   </div>
 
-                  {/* Modal Tab Switcher: Details vs CSV Row */}
-                  <div className="flex items-center rounded-full bg-white/[0.04] p-1 ring-1 ring-white/[0.08]">
+                  <div className="flex items-center rounded-md border border-[#2E2E2E] bg-[#171717] p-0.5">
                     <button
                       type="button"
                       onClick={() => setModalTab("details")}
                       className={cn(
-                        "rounded-full px-3 py-1 text-xs font-medium cursor-pointer",
+                        "rounded px-2.5 py-1 text-xs font-medium cursor-pointer",
                         modalTab === "details"
-                          ? "bg-[#f4f5f7] text-[#050505]"
-                          : "text-[#9ca3af] hover:text-white"
+                          ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                          : "text-[#A3A3A3] hover:text-[#F5F5F5]"
                       )}
                     >
-                      Details &amp; Edit
+                      Details &amp; edit
                     </button>
                     <button
                       type="button"
                       onClick={() => setModalTab("csv")}
                       className={cn(
-                        "rounded-full px-3 py-1 font-mono-tech text-xs font-medium cursor-pointer",
+                        "rounded px-2.5 py-1 text-xs font-medium cursor-pointer",
                         modalTab === "csv"
-                          ? "bg-amber-400 text-[#050505]"
-                          : "text-[#9ca3af] hover:text-white"
+                          ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                          : "text-[#A3A3A3] hover:text-[#F5F5F5]"
                       )}
                     >
-                      CSV Row (.csv)
+                      CSV row
                     </button>
                   </div>
                 </div>
               </DialogHeader>
 
-              <div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2">
-                <div className="overflow-hidden rounded-2xl bg-black/60 ring-1 ring-white/[0.1] flex items-center justify-center">
+              <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
+                <div className="flex items-center justify-center overflow-hidden rounded-lg border border-[#2E2E2E] bg-[#121212] p-2">
                   <img
-                    src={getGenerationImageUrl(selectedGen.id, selectedGen.md5 || selectedGen.image_file)}
+                    src={getGenerationImageUrl(
+                      selectedGen.id,
+                      selectedGen.md5 || selectedGen.image_file
+                    )}
                     alt={selectedGen.title}
                     className="max-h-[440px] w-full object-contain"
                   />
@@ -1012,14 +1111,15 @@ export function GalleryScreen({
                     <div className="space-y-3">
                       <div>
                         <div className="flex items-center justify-between">
-                          <span className="font-mono-tech text-[10px] uppercase tracking-wider text-[#9ca3af]">
-                            Editable Visual Prompt (prompt_final)
+                          <span className="font-medium text-[#F5F5F5]">
+                            Visual generation prompt
                           </span>
                           <button
                             type="button"
                             onClick={async () => {
                               const draftP = (
-                                promptDrafts[selectedGen.id] ?? selectedGen.prompt_final
+                                promptDrafts[selectedGen.id] ??
+                                selectedGen.prompt_final
                               ).trim()
                               if (draftP) {
                                 await onUpdateMetadata(selectedGen.id, {
@@ -1027,15 +1127,16 @@ export function GalleryScreen({
                                 })
                               }
                             }}
-                            className="font-mono-tech text-[10px] text-emerald-300 hover:underline cursor-pointer"
+                            className="font-medium text-[#F5F5F5] hover:underline cursor-pointer"
                           >
-                            Save Prompt
+                            Save prompt
                           </button>
                         </div>
                         <textarea
                           rows={4}
                           value={
-                            promptDrafts[selectedGen.id] ?? selectedGen.prompt_final
+                            promptDrafts[selectedGen.id] ??
+                            selectedGen.prompt_final
                           }
                           onChange={(e) =>
                             setPromptDrafts((prev) => ({
@@ -1043,16 +1144,20 @@ export function GalleryScreen({
                               [selectedGen.id]: e.target.value,
                             }))
                           }
-                          className="mt-1 w-full rounded-xl bg-white/[0.03] p-3 text-xs leading-relaxed text-[#e5e7eb] ring-1 ring-white/[0.08]"
+                          className="mt-1 w-full rounded-md border border-[#2E2E2E] bg-[#121212] p-2.5 text-xs leading-relaxed text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
                         />
                         <div className="mt-2 flex items-center gap-2">
-                          <button
-                            type="button"
+                          <StudioButton
+                            variant="secondary"
                             onClick={async () => {
                               const draftP = (
-                                promptDrafts[selectedGen.id] ?? selectedGen.prompt_final
+                                promptDrafts[selectedGen.id] ??
+                                selectedGen.prompt_final
                               ).trim()
-                              if (draftP && draftP !== selectedGen.prompt_final) {
+                              if (
+                                draftP &&
+                                draftP !== selectedGen.prompt_final
+                              ) {
                                 await onUpdateMetadata(selectedGen.id, {
                                   prompt_final: draftP,
                                 })
@@ -1060,82 +1165,87 @@ export function GalleryScreen({
                               await onRetrySingleTurn(selectedGen.id, false)
                               setSelectedGen(null)
                             }}
-                            className="rounded-full bg-white/[0.07] px-3 py-1 text-[11px] text-white hover:bg-white/[0.14] cursor-pointer"
                           >
-                            Save Prompt & Regenerate Image
-                          </button>
+                            Save prompt &amp; regenerate image
+                          </StudioButton>
                         </div>
                       </div>
 
                       {selectedGen.reference && (
-                        <div className="flex items-center gap-3 rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/[0.07]">
+                        <div className="flex items-center gap-3 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5">
                           <img
                             src={getReferenceImageUrl(selectedGen.reference.id)}
                             alt={selectedGen.reference.title}
-                            className="size-12 rounded-lg object-cover"
+                            className="size-11 rounded border border-[#2E2E2E] bg-[#121212] object-cover"
                           />
                           <div>
-                            <p className="font-medium text-white">
+                            <p className="font-medium text-[#F5F5F5]">
                               Reference #{selectedGen.reference.id} (
                               {selectedGen.reference.source_type})
                             </p>
-                            <p className="text-[11px] text-[#9ca3af]">
+                            <p className="text-[11px] text-[#737373]">
                               Rights: {selectedGen.reference.usage_rights}
                             </p>
                           </div>
                         </div>
                       )}
 
-                      <div className="flex items-center justify-between rounded-xl bg-white/[0.025] p-3 ring-1 ring-white/[0.07]">
+                      <div className="flex items-center justify-between rounded-md border border-[#2E2E2E] bg-[#171717] p-3">
                         <div>
-                          <p className="text-xs font-semibold text-white">
-                            Peak of Picassy (Featured CSV Flag)
+                          <p className="text-xs font-semibold text-[#F5F5F5]">
+                            Peak of Picassy
                           </p>
-                          <p className="text-[11px] text-[#9ca3af]">
-                            Exports <code className="text-amber-300">{selectedGen.is_peak ? "TRUE" : "FALSE"}</code> in column 7 of <code className="text-[#d1d5db]">pin-import.csv</code>
+                          <p className="text-[11px] text-[#A3A3A3]">
+                            Writes{" "}
+                            <code className="font-mono-tech text-[#F5F5F5]">
+                              {selectedGen.is_peak ? "TRUE" : "FALSE"}
+                            </code>{" "}
+                            in column 7 of pin-import.csv
                           </p>
                         </div>
                         <button
                           type="button"
                           onClick={() => handleTogglePeak(selectedGen)}
                           className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono-tech text-xs font-semibold ring-1 transition-all cursor-pointer",
+                            "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono-tech text-xs font-semibold transition-colors duration-150 cursor-pointer",
                             selectedGen.is_peak
-                              ? "bg-amber-400 text-[#050505] ring-amber-300"
-                              : "bg-white/[0.05] text-[#d1d5db] ring-white/[0.1] hover:bg-white/[0.1]"
+                              ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212]"
+                              : "border-[#383838] bg-[#262626] text-[#F5F5F5]"
                           )}
                         >
-                          <Star size={13} weight={selectedGen.is_peak ? "fill" : "regular"} />
+                          <Star
+                            size={13}
+                            weight={selectedGen.is_peak ? "fill" : "regular"}
+                          />
                           {selectedGen.is_peak ? "TRUE" : "FALSE"}
                         </button>
                       </div>
 
-                      <div className="rounded-xl bg-white/[0.02] p-3 ring-1 ring-white/[0.06] font-mono-tech text-[11px] text-[#9ca3af] space-y-1">
+                      <div className="rounded-md border border-[#2E2E2E] bg-[#121212] p-2.5 font-mono-tech text-[11px] text-[#737373] space-y-0.5">
                         <p>MD5: {selectedGen.md5}</p>
                         <p>dHash: {selectedGen.dhash}</p>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-                      <button
-                        type="button"
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#2E2E2E] pt-3">
+                      <StudioButton
+                        variant="danger"
                         onClick={async () => {
                           await onDeleteGeneration(selectedGen.id)
                           setSelectedGen(null)
                         }}
-                        className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-3.5 py-2 text-xs text-rose-200 hover:bg-rose-500/25 cursor-pointer"
+                        icon={<Trash size={13} />}
                       >
-                        <Trash size={13} />
-                        Delete Image
-                      </button>
+                        Delete image
+                      </StudioButton>
 
                       <div className="flex items-center gap-2">
                         <a
                           href={getJobCsvUrl(currentJob.id)}
                           download={`${currentJob.slug || "set"}-pin-import.csv`}
-                          className="rounded-full bg-amber-400/20 px-3.5 py-2 text-xs text-amber-200 hover:bg-amber-400/30"
+                          className="inline-flex h-9 items-center rounded-md border border-[#383838] bg-[#262626] px-3 text-xs font-medium text-[#F5F5F5]"
                         >
-                          Download Set .CSV
+                          pin-import.csv
                         </a>
                         <a
                           href={getGenerationImageUrl(
@@ -1144,38 +1254,37 @@ export function GalleryScreen({
                             true
                           )}
                           download={selectedGen.image_file}
-                          className="rounded-full bg-[#f4f5f7] px-4 py-2 text-xs font-semibold text-[#050505] hover:bg-white"
+                          className="inline-flex h-9 items-center rounded-md bg-[#FAFAFA] px-3.5 text-xs font-semibold text-[#121212] hover:bg-[#E5E5E5]"
                         >
-                          Download Image
+                          Download image
                         </a>
                       </div>
                     </div>
                   </div>
                 ) : (
                   <div className="flex flex-col justify-between gap-3">
-                    <pre className="max-h-[370px] whitespace-pre-wrap break-all overflow-auto rounded-2xl bg-[#050505] p-4 font-mono-tech text-[11px] leading-relaxed text-amber-200 ring-1 ring-white/[0.08]">
+                    <pre className="max-h-[370px] whitespace-pre-wrap break-all overflow-auto rounded-md border border-[#2E2E2E] bg-[#121212] p-3.5 font-mono-tech text-[11px] leading-relaxed text-[#E5E5E5]">
                       {buildCsvRowPreview(selectedGen, true)}
                     </pre>
                     <div className="flex items-center justify-between">
-                      <button
-                        type="button"
+                      <StudioButton
+                        variant="secondary"
                         onClick={() =>
                           handleCopyText(
                             selectedGen.id + 20000,
                             buildCsvRowPreview(selectedGen, false)
                           )
                         }
-                        className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-4 py-2 text-xs text-white hover:bg-white/[0.12] cursor-pointer"
+                        icon={<Copy size={13} />}
                       >
-                        <Copy size={13} weight="light" />
                         {copiedId === selectedGen.id + 20000
-                          ? "Copied CSV Row"
-                          : "Copy CSV Row"}
-                      </button>
+                          ? "Copied CSV row"
+                          : "Copy CSV row"}
+                      </StudioButton>
                       <a
                         href={getJobCsvUrl(currentJob.id)}
                         download={`${currentJob.slug || "set"}-pin-import.csv`}
-                        className="rounded-full bg-amber-400 px-4 py-2 text-xs font-semibold text-[#050505] hover:bg-amber-300"
+                        className="inline-flex h-9 items-center rounded-md bg-[#FAFAFA] px-3.5 text-xs font-semibold text-[#121212] hover:bg-[#E5E5E5]"
                       >
                         Download pin-import.csv
                       </a>

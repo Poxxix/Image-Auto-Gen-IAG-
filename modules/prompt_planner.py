@@ -6,7 +6,13 @@ import time
 from typing import Any, Dict, List, Optional
 import requests
 
-from config import AI_ENGINES, CDP_ENDPOINT, PROVIDER_MODELS, STUDIO_PRESETS
+from config import (
+    AI_ENGINES,
+    CDP_ENDPOINT,
+    PROVIDER_MODELS,
+    STUDIO_PRESETS,
+    normalize_reference_strength,
+)
 from database.db_manager import db
 from modules.app_logging import logger
 from modules.reference_sources.image_utils import inspect_image_bytes
@@ -190,6 +196,115 @@ def resolve_axes_and_fixed(
     return base_fixed, resolved_axes
 
 
+_GENERIC_DEFAULT_STYLE_SNIPPETS = (
+    "high-resolution editorial photography, crisp focus, authentic texture",
+    "high-end editorial photography, natural tonal range, crisp micro-detail",
+    "harmonious tones faithful to the theme and reference",
+    "balanced natural neutrals, warm highlights, deep graphite shadows",
+    "refined, clean, cohesive visual storytelling",
+    "refined, calm, authentic visual storytelling",
+)
+
+
+def _scrub_reference_mentions(text: str, theme: str = "") -> str:
+    """Removes dangling 'supplied/attached reference image' clauses when running without an attachment."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    repl_subject = f"the {theme.strip()}" if theme.strip() else "the subject"
+    s = re.sub(
+        r"\bguided by the (?:supplied|attached|provided) reference(?: image)?\b",
+        f"for {repl_subject}",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\b(?:from|in|of) the (?:supplied|attached|provided )?reference(?: image)?\b",
+        f"for {repl_subject}",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\bthe reference's\b",
+        "the core",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\bas the reference suggests\b",
+        "naturally",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"\s{2,}", " ", s).strip(" ,;.")
+    return s
+
+
+def _compact_prompt_clause(
+    text: str,
+    max_words: int = 22,
+    *,
+    has_reference: bool = False,
+    theme: str = "",
+) -> str:
+    """
+    Trims verbose meta-instructions and caps word count cleanly at sentence/clause boundaries
+    so final image prompts stay inside the 70-115 word sweet spot without contradictions.
+    """
+    s = " ".join(str(text or "").split()).strip()
+    if not s:
+        return ""
+    if not has_reference:
+        s = _scrub_reference_mentions(s, theme=theme)
+
+    # Drop verbose meta-talk sentences that dilute image model attention
+    sentences = [seg.strip() for seg in re.split(r"(?<=[.!?])\s+", s) if seg.strip()]
+    kept: List[str] = []
+    meta_noise_patterns = (
+        "use the selected variations to explore",
+        "adapt each variation to the subject",
+        "create a cohesive series of",
+        "let the selected mark-making treatment influence",
+        "without imposing a separate stylistic theme",
+        "easy to read at thumbnail size",
+    )
+    if has_reference:
+        # Reference role header already governs how the reference subject/style is used
+        meta_noise_patterns = meta_noise_patterns + (
+            "preserve the reference",
+            "carry over the reference",
+            "interpret the reference",
+            "derive the tonal range",
+            "follow the reference",
+            "taking cues from its",
+        )
+
+    for sent in sentences:
+        low = sent.lower()
+        if any(pat in low for pat in meta_noise_patterns):
+            continue
+        kept.append(sent.rstrip("."))
+
+    merged = ". ".join(kept).strip(" .")
+    if not merged:
+        return ""
+
+    words = merged.split()
+    if len(words) <= max_words:
+        return merged
+
+    clipped = " ".join(words[:max_words]).rstrip(" ,;:-")
+    # Remove trailing dangling prepositions/conjunctions
+    while clipped and clipped.split()[-1].lower() in {
+        "and", "or", "with", "in", "on", "of", "to", "for", "from", "by", "the", "a", "an", "while", "so"
+    }:
+        parts = clipped.split()[:-1]
+        if not parts:
+            break
+        clipped = " ".join(parts).rstrip(" ,;:-")
+    return clipped
+
+
 def compose_prompt_from_axes(
     theme: str,
     base_prompt: str,
@@ -198,6 +313,7 @@ def compose_prompt_from_axes(
     turn_axes: Dict[str, Any],
     has_reference: bool = False,
     reference_reused: bool = False,
+    reference_strength: str = "balanced",
     variation_number: int = 1,
     strong_variation: bool = False,
     enabled_axes: Optional[Dict[str, bool]] = None,
@@ -205,83 +321,137 @@ def compose_prompt_from_axes(
     nuance_tag: str = "",
 ) -> str:
     """
-    Constructs a rich, deterministic `prompt_final` from the theme, base prompt,
-    active Locked Continuity elements, and only the currently enabled Variation Axes.
+    Constructs a focused, high-success 70-115 word `prompt_final`:
+    1. Clear 1-sentence Reference Role (`subject_keep` | `balanced` | `style_only`) or Core Subject.
+    2. Turn Variation Axes placed UP FRONT (Sentence #2) so Gemini applies variations reliably.
+    3. Non-redundant Style/Continuity rules (never letting generic preset text fight reference Style DNA).
+    4. Clean aspect ratio & pure-visual constraint.
     """
     ratio_labels = {
-        "1:1": "1:1 square frame (1080x1080)",
-        "4:5": "4:5 vertical editorial portrait (1080x1350)",
-        "9:16": "9:16 full vertical story frame (1080x1920)",
-        "16:9": "16:9 widescreen cinema frame (1920x1080)",
-        "3:2": "3:2 classic 35mm landscape frame (1620x1080)",
+        "1:1": "1:1 square",
+        "4:5": "4:5 vertical portrait",
+        "9:16": "9:16 vertical full-screen",
+        "16:9": "16:9 widescreen",
+        "3:2": "3:2 landscape",
     }
-    ratio_desc = ratio_labels.get(aspect_ratio, f"{aspect_ratio} aspect ratio")
+    ratio_desc = ratio_labels.get(aspect_ratio, f"{aspect_ratio} frame")
     active_axes = normalize_enabled_axes(raw_enabled=enabled_axes)
     active_fixed = normalize_enabled_fixed(fixed_elements)
+    ref_mode = normalize_reference_strength(reference_strength, default="balanced")
+    clean_theme = theme.strip()
 
-    segments: List[str] = []
-    if has_reference:
-        angle_instruction = (
-            "camera angle, framing, pose, object placement, or background"
-            if active_axes.get("camera_angles", True)
-            else "exact composition, styling, lighting, or background details"
-        )
-        fresh_phrase = (
-            "different camera angle, fresh composition, new pose/arrangement, and new background"
-            if active_axes.get("camera_angles", True)
-            else "fresh composition, distinct lighting, and newly arranged background details"
-        )
-        if reference_reused or strong_variation:
-            segments.append(
-                f"Use the attached reference image ONLY for visual DNA (subject motif, finish/texture, color palette, and aesthetic style) for \"{theme.strip()}\". "
-                f"CRITICAL: Do NOT copy, trace, or preserve the reference photo's {angle_instruction} — "
-                "invent an unmistakably new scene driven by the creative parameters below."
-            )
-        else:
-            segments.append(
-                f"Use the attached reference image purely as style and subject inspiration for \"{theme.strip()}\". "
-                f"Create a brand-new original visual with a {fresh_phrase} rather than replicating the input image's framing."
-            )
-
-    core_theme = f"Theme: \"{theme.strip()}\"."
-    if base_prompt and base_prompt.strip():
-        core_theme += f" Core concept: {base_prompt.strip().rstrip('.')}."
-    segments.append(core_theme)
-
-    # Fixed / Locked continuity elements (respecting individual toggles)
-    fixed_parts: List[str] = []
-    if active_fixed.get("subject", True) and fixed_elements.get("subject"):
-        fixed_parts.append(f"Primary subject: {str(fixed_elements['subject']).rstrip('.')}")
-    if active_fixed.get("style", True) and fixed_elements.get("style"):
-        fixed_parts.append(f"Visual style: {str(fixed_elements['style']).rstrip('.')}")
-    if active_fixed.get("color_palette", True) and fixed_elements.get("color_palette"):
-        fixed_parts.append(f"Color palette: {str(fixed_elements['color_palette']).rstrip('.')}")
-    if active_fixed.get("brand_mood", True) and fixed_elements.get("brand_mood"):
-        fixed_parts.append(f"Mood: {str(fixed_elements['brand_mood']).rstrip('.')}")
-    if fixed_parts:
-        segments.append(". ".join(fixed_parts) + ".")
-
-    # Distinct variation axes for this specific turn (strictly honoring enabled_axes)
+    # Build concise Turn Variation Axes first so they sit at Sentence #2 (maximum model attention)
     axis_parts: List[str] = []
     if active_axes.get("camera_angles", True) and turn_axes.get("camera_angle"):
-        axis_parts.append(f"Camera & perspective: {str(turn_axes['camera_angle']).rstrip('.')}")
+        ax = _compact_prompt_clause(str(turn_axes["camera_angle"]), 16, has_reference=has_reference, theme=clean_theme)
+        if ax:
+            axis_parts.append(f"Perspective: {ax}")
     if active_axes.get("compositions", True) and turn_axes.get("composition"):
-        axis_parts.append(f"Composition: {str(turn_axes['composition']).rstrip('.')}")
+        ax = _compact_prompt_clause(str(turn_axes["composition"]), 16, has_reference=has_reference, theme=clean_theme)
+        if ax:
+            axis_parts.append(f"Composition: {ax}")
     if active_axes.get("lighting", True) and turn_axes.get("lighting"):
-        axis_parts.append(f"Lighting: {str(turn_axes['lighting']).rstrip('.')}")
+        ax = _compact_prompt_clause(str(turn_axes["lighting"]), 15, has_reference=has_reference, theme=clean_theme)
+        if ax:
+            axis_parts.append(f"Lighting: {ax}")
     if active_axes.get("atmospheres", True) and turn_axes.get("atmosphere"):
-        axis_parts.append(f"Setting & atmosphere: {str(turn_axes['atmosphere']).rstrip('.')}")
+        ax = _compact_prompt_clause(str(turn_axes["atmosphere"]), 15, has_reference=has_reference, theme=clean_theme)
+        if ax:
+            axis_parts.append(f"Backdrop: {ax}")
     if turn_axes.get("custom_axis") and (active_axes.get("custom_axis", False) or "custom_axis" in turn_axes):
-        lbl = str(turn_axes.get("custom_axis_label") or custom_axis_label or "Custom Detail").strip()
-        axis_parts.append(f"{lbl}: {str(turn_axes['custom_axis']).rstrip('.')}")
+        lbl = str(turn_axes.get("custom_axis_label") or custom_axis_label or "Technique").strip()
+        ax = _compact_prompt_clause(str(turn_axes["custom_axis"]), 16, has_reference=has_reference, theme=clean_theme)
+        if ax:
+            axis_parts.append(f"{lbl}: {ax}")
     if nuance_tag:
-        axis_parts.append(f"Study nuance: {nuance_tag.rstrip('.')}")
-    if axis_parts:
-        segments.append(". ".join(axis_parts) + ".")
+        axis_parts.append(f"Detail focus: {nuance_tag.rstrip('.')}")
+
+    segments: List[str] = []
+
+    if has_reference:
+        extra_distinct = (
+            " Ensure an unmistakably different layout and silhouette from the input photo."
+            if (reference_reused or strong_variation)
+            else ""
+        )
+        if ref_mode == "subject_keep":
+            segments.append(
+                f"Create a fresh variation of the attached reference image for \"{clean_theme}\": "
+                "preserve its exact artistic medium, texture, color palette, and core subject motif, "
+                f"while re-staging the pose, placement, and framing.{extra_distinct}"
+            )
+        elif ref_mode == "style_only":
+            segments.append(
+                f"Create a brand-new \"{clean_theme}\" visual borrowing ONLY the artistic medium, "
+                "surface texture, lighting mood, and color palette from the attached reference image, "
+                f"depicting an entirely new subject arrangement.{extra_distinct}"
+            )
+        else:
+            # "balanced" (Default): 100% Style DNA lock + fresh original scene in same theme
+            segments.append(
+                f"Create a brand-new original \"{clean_theme}\" visual matching 100% of the attached "
+                "reference image's Style DNA (exact medium, brushwork/surface texture, shading depth, and tonal palette), "
+                f"staging a fresh scene and composition rather than copying the reference layout.{extra_distinct}"
+            )
+
+        if axis_parts:
+            segments.append(". ".join(axis_parts) + ".")
+
+        # Keep only non-generic, non-contradictory continuity notes when reference image already supplies Style DNA
+        compact_base = _compact_prompt_clause(base_prompt, 22, has_reference=True, theme=clean_theme)
+        if compact_base:
+            segments.append(f"Direction: {compact_base}.")
+
+        ref_fixed_parts: List[str] = []
+        for field_key, label in (
+            ("subject", "Subject note"),
+            ("style", "Medium"),
+            ("color_palette", "Palette"),
+        ):
+            if not active_fixed.get(field_key, True):
+                continue
+            raw_val = str(fixed_elements.get(field_key) or "").strip()
+            if not raw_val or raw_val.lower() == clean_theme.lower():
+                continue
+            if raw_val.lower().rstrip(".") in _GENERIC_DEFAULT_STYLE_SNIPPETS:
+                continue
+            cleaned_val = _compact_prompt_clause(raw_val, 15, has_reference=True, theme=clean_theme)
+            if cleaned_val:
+                ref_fixed_parts.append(f"{label}: {cleaned_val}")
+        if ref_fixed_parts:
+            segments.append(". ".join(ref_fixed_parts) + ".")
+    else:
+        compact_base = _compact_prompt_clause(base_prompt, 26, has_reference=False, theme=clean_theme)
+        lead = f"Theme: \"{clean_theme}\"."
+        if compact_base:
+            lead += f" {compact_base}."
+        segments.append(lead)
+
+        if axis_parts:
+            segments.append(". ".join(axis_parts) + ".")
+
+        fixed_parts: List[str] = []
+        if active_fixed.get("subject", True) and fixed_elements.get("subject"):
+            v = _compact_prompt_clause(str(fixed_elements["subject"]), 16, has_reference=False, theme=clean_theme)
+            if v and v.lower() != clean_theme.lower():
+                fixed_parts.append(f"Subject: {v}")
+        if active_fixed.get("style", True) and fixed_elements.get("style"):
+            v = _compact_prompt_clause(str(fixed_elements["style"]), 16, has_reference=False, theme=clean_theme)
+            if v:
+                fixed_parts.append(f"Style: {v}")
+        if active_fixed.get("color_palette", True) and fixed_elements.get("color_palette"):
+            v = _compact_prompt_clause(str(fixed_elements["color_palette"]), 14, has_reference=False, theme=clean_theme)
+            if v:
+                fixed_parts.append(f"Palette: {v}")
+        if active_fixed.get("brand_mood", True) and fixed_elements.get("brand_mood"):
+            v = _compact_prompt_clause(str(fixed_elements["brand_mood"]), 12, has_reference=False, theme=clean_theme)
+            if v:
+                fixed_parts.append(f"Mood: {v}")
+        if fixed_parts:
+            segments.append(". ".join(fixed_parts) + ".")
 
     segments.append(
-        f"Format: {ratio_desc} (Set variation #{variation_number}). "
-        "Pure visual photograph/artwork only — no embedded text, no watermarks, no borders."
+        f"Format: {ratio_desc} (variation #{variation_number}); pure artwork/photograph only, no text, borders, or watermarks."
     )
     return " ".join(segments)
 
@@ -294,6 +464,7 @@ def plan_job_variations(
     aspect_ratio: str = "1:1",
     model: str = "chrome-cdp/gemini",
     reference_mode: str = "prompt_only",
+    reference_strength: str = "balanced",
     reference_ids: Optional[List[int]] = None,
     cycle_references: bool = True,
     preset_id: str = "",
@@ -402,6 +573,7 @@ def plan_job_variations(
                 turn_axes=turn_axes,
                 has_reference=(ref_id is not None),
                 reference_reused=ref_reused,
+                reference_strength=reference_strength,
                 variation_number=idx,
                 enabled_axes=enabled_axes,
                 custom_axis_label=custom_label,
@@ -481,7 +653,9 @@ def mutate_generation_variation(
             turn_axes=new_axes,
             has_reference=bool(ref_id),
             reference_reused=True,
+            reference_strength=str(job.get("reference_strength") or "balanced"),
             variation_number=idx,
+            strong_variation=True,
             enabled_axes=enabled_axes,
             custom_axis_label=custom_label,
             nuance_tag=nuance,
@@ -522,6 +696,7 @@ def build_axes_suggestion_prompt(
         f"You are an expert Visual Creative Director planning a cohesive multi-shot image set for the theme: \"{theme.strip()}\". "
         f"{base_note}{ref_note}"
         "Determine whether traditional camera angle rotation makes sense for this theme (for wallpapers, 2D paintings/drawings, or straight-on front-facing portraits, set `enabled_axes.camera_angles` to false and instead use `custom_axis` for brushwork/motif/pose variations). "
+        "CRITICAL CONCISENESS RULE: Keep every single variation option SHORT (6 to 12 words max) and subject-flexible (control spatial framing, negative space, light direction, and stroke/surface rhythm without forcing rigid unrelated objects that break reference style). Keep each `fixed_elements` value under 14 words.\n"
         "Design a custom set of Locked Continuity Elements plus Variation Axes (6 distinct options per enabled axis) tailored 100% to this specific theme.\n"
         "IMPORTANT: Do NOT generate any image right now — reply ONLY with a single valid JSON object in this exact schema:\n"
         "```json\n"
@@ -595,13 +770,14 @@ def build_external_master_prompt(
 
     sample_schema = {
         "theme": theme.strip() or "My Custom Image Set",
-        "base_prompt": base_prompt.strip() or "High-craft cohesive visual series",
+        "base_prompt": base_prompt.strip() or "Concise presentation note (<= 16 words)",
         "aspect_ratio": "4:5",
+        "reference_strength": "balanced",
         "fixed_elements": {
-            "subject": "Locked primary subject, framing rule (e.g. straight-on front view), or focal motif",
-            "style": "Locked medium, camera/brush technique, fidelity, finish",
-            "color_palette": "Locked cohesive palette (3-5 harmonious tones)",
-            "brand_mood": "Locked emotional tone & aesthetic mood",
+            "subject": "Concise focal motif or framing rule (<= 14 words)",
+            "style": "Concise medium & finish (<= 14 words)",
+            "color_palette": "Concise 3-5 tone palette (<= 12 words)",
+            "brand_mood": "Concise mood (<= 10 words)",
             "enabled_fixed": {
                 "subject": True,
                 "style": True,
@@ -645,7 +821,8 @@ def build_external_master_prompt(
         f"- **Structure Guidance:** {kind_guidance}\n"
         f"- **Caption Language Target:** {metadata_language}\n\n"
         "Please ask clarifying suggestions only if critical, OR directly generate a ready-to-import Studio Configuration.\n"
-        f"Provide {options_hint}, keeping visual prompts in natural English.\n\n"
+        f"Provide {options_hint}, keeping visual prompts in natural English.\n"
+        "**CRITICAL SWEET-SPOT RULE (avoid bloated prompts!):** Keep `base_prompt` <= 16 words, each `fixed_elements` field <= 14 words, and EVERY option inside `variation_axes` strictly **6 to 12 words** focusing on spatial composition, light direction, negative space, and medium texture (do NOT write long multi-sentence paragraphs or inject rigid unrelated props that override reference image style). Set `reference_strength` to `\"subject_keep\"`, `\"balanced\"`, or `\"style_only\"`.\n\n"
         "Return a **single valid JSON code block** using this exact structure so I can paste/import it straight back into my app:\n"
         f"```json\n{schema_json}\n```"
     )
@@ -750,6 +927,10 @@ def parse_external_axes_import(text: str) -> Optional[Dict[str, Any]]:
                 out["base_prompt"] = str(parsed["base_prompt"]).strip()
             if parsed.get("aspect_ratio") and str(parsed["aspect_ratio"]).strip() in ("1:1", "4:5", "9:16", "16:9", "3:2"):
                 out["aspect_ratio"] = str(parsed["aspect_ratio"]).strip()
+            if parsed.get("reference_strength"):
+                out["reference_strength"] = normalize_reference_strength(
+                    str(parsed["reference_strength"]).strip(), default="balanced"
+                )
             return out
         except Exception:
             continue

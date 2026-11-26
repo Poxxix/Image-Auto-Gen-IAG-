@@ -85,13 +85,14 @@ def ahash_distance(hash_a: str, hash_b: str) -> int:
 def measure_image_similarity(
     cand_info: Dict[str, Any],
     ref_info: Dict[str, Any],
-    dhash_max: int = 10,
-    ahash_max: int = 8,
-    cosine_min: float = 0.92,
+    dhash_max: int = 8,
+    ahash_max: int = 6,
+    cosine_min: float = 0.93,
 ) -> Dict[str, Any]:
     """
     Compares a generated candidate image against a reference/input image across
-    dHash, aHash, and normalized 16x16 luminance structure to detect input clones.
+    dHash, aHash, and normalized 16x16 luminance structure to detect true input clones
+    without false-positive rejections on monochrome/charcoal/white-ground artwork.
     """
     d_dist = dhash_distance(str(cand_info.get("dhash") or ""), str(ref_info.get("dhash") or ""))
     a_dist = ahash_distance(str(cand_info.get("ahash") or ""), str(ref_info.get("ahash") or ""))
@@ -101,8 +102,8 @@ def measure_image_similarity(
     )
     too_similar = (
         d_dist <= dhash_max
-        or a_dist <= ahash_max
-        or (cos_sim >= cosine_min and d_dist <= 16)
+        or (d_dist <= 12 and a_dist <= ahash_max)
+        or (d_dist <= 13 and cos_sim >= cosine_min)
     )
     return {
         "dhash_dist": d_dist,

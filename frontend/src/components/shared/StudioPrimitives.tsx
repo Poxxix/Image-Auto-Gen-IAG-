@@ -4,13 +4,17 @@ import { cn } from "@/lib/utils"
 export interface StudioPanelProps extends React.HTMLAttributes<HTMLDivElement> {
   eyebrow?: string
   title?: string
+  subtitle?: string
   headerRight?: React.ReactNode
+  noPadding?: boolean
 }
 
 export function StudioPanel({
   eyebrow,
   title,
+  subtitle,
   headerRight,
+  noPadding = false,
   children,
   className,
   ...props
@@ -18,29 +22,29 @@ export function StudioPanel({
   return (
     <section
       className={cn(
-        "studio-panel overflow-hidden bg-[#141821] border border-white/[0.08] rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.28)]",
+        "studio-panel overflow-hidden rounded-lg border border-[#2E2E2E] bg-[#1C1C1C]",
         className
       )}
       {...props}
     >
-      {(eyebrow || title || headerRight) && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] bg-[#10131a]/60 px-5 py-3.5">
-          <div>
-            {eyebrow && (
-              <p className="font-mono-tech text-[10px] font-medium uppercase tracking-[0.16em] text-amber-400/90">
-                {eyebrow}
-              </p>
-            )}
+      {(title || subtitle || headerRight) && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#2E2E2E] px-4 py-3 sm:px-5">
+          <div className="min-w-0">
             {title && (
-              <h2 className="mt-0.5 font-display text-base font-semibold text-white">
-                {title}
-              </h2>
+              <h2 className="text-sm font-semibold text-[#F5F5F5]">{title}</h2>
+            )}
+            {subtitle && (
+              <p className="mt-0.5 text-xs text-[#A3A3A3]">{subtitle}</p>
             )}
           </div>
-          {headerRight && <div>{headerRight}</div>}
+          {headerRight && (
+            <div className="flex items-center gap-2">{headerRight}</div>
+          )}
         </div>
       )}
-      <div className="p-5">{children}</div>
+      <div className={cn(!noPadding && "p-4 sm:p-5")} data-eyebrow={eyebrow ? undefined : undefined}>
+        {children}
+      </div>
     </section>
   )
 }
@@ -53,11 +57,11 @@ export type StudioBadgeTone =
   | "neutral"
 
 const BADGE_TONES: Record<StudioBadgeTone, string> = {
-  emerald: "bg-emerald-500/12 text-emerald-300 border-emerald-500/30",
-  amber: "bg-amber-500/12 text-amber-300 border-amber-500/30",
-  rose: "bg-rose-500/12 text-rose-300 border-rose-500/30",
-  sky: "bg-sky-500/12 text-sky-300 border-sky-500/30",
-  neutral: "bg-white/[0.05] text-slate-300 border-white/[0.1]",
+  emerald: "bg-[#262626] text-[#F5F5F5] border-[#404040]",
+  amber: "bg-[#262626] text-[#D4D4D4] border-[#383838]",
+  sky: "bg-[#262626] text-[#F5F5F5] border-[#404040]",
+  rose: "bg-[#EF4444]/10 text-[#FCA5A5] border-[#EF4444]/30",
+  neutral: "bg-[#222222] text-[#A3A3A3] border-[#2E2E2E]",
 }
 
 export function StudioBadge({
@@ -74,24 +78,20 @@ export function StudioBadge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono-tech text-[11px] font-medium",
+        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium tabular-nums",
         BADGE_TONES[tone] || BADGE_TONES.neutral,
         className
       )}
     >
       <span
         className={cn(
-          "size-1.5 rounded-full",
-          tone === "emerald"
-            ? "bg-emerald-400"
-            : tone === "amber"
-              ? "bg-amber-400"
-              : tone === "rose"
-                ? "bg-rose-400"
-                : tone === "sky"
-                  ? "bg-sky-400"
-                  : "bg-slate-400",
-          pulse && "animate-ping"
+          "size-1.5 rounded-full shrink-0",
+          tone === "rose"
+            ? "bg-[#F87171]"
+            : tone === "emerald" || tone === "sky"
+              ? "bg-[#FAFAFA]"
+              : "bg-[#737373]",
+          pulse && "animate-pulse"
         )}
       />
       <span>{label}</span>
@@ -117,13 +117,13 @@ export function StudioButton({
 }: StudioButtonProps) {
   const styles = {
     primary:
-      "bg-amber-400 text-[#0c0e13] font-semibold hover:bg-amber-300 shadow-[0_4px_18px_rgba(251,191,36,0.22)]",
+      "bg-[#FAFAFA] text-[#121212] font-semibold border border-[#FAFAFA] hover:bg-[#E5E5E5] hover:border-[#E5E5E5]",
     secondary:
-      "bg-[#1c2230] text-slate-100 border border-white/[0.1] hover:bg-[#252c3d]",
+      "bg-[#262626] text-[#F5F5F5] border border-[#383838] hover:bg-[#303030] hover:border-[#4A4A4A]",
     danger:
-      "bg-rose-500/15 text-rose-200 border border-rose-500/30 hover:bg-rose-500/25",
+      "bg-[#262626] text-[#FCA5A5] border border-[#EF4444]/35 hover:bg-[#EF4444]/15",
     ghost:
-      "bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white",
+      "bg-transparent text-[#A3A3A3] border border-transparent hover:bg-[#262626] hover:text-[#F5F5F5]",
   }[variant]
 
   return (
@@ -131,7 +131,7 @@ export function StudioButton({
       type="button"
       disabled={disabled || loading}
       className={cn(
-        "inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-medium transition-all disabled:opacity-45 disabled:pointer-events-none cursor-pointer",
+        "inline-flex h-9 items-center justify-center gap-2 rounded-md px-3.5 text-xs font-medium transition-colors duration-150 disabled:opacity-45 disabled:pointer-events-none cursor-pointer",
         styles,
         className
       )}
@@ -165,17 +165,17 @@ export function StudioPagination({
   const end = Math.min(totalItems, safePage * pageSize)
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white/[0.025] px-4 py-2.5 ring-1 ring-white/[0.07]">
-      <span className="font-mono-tech text-[11px] text-[#9ca3af]">
-        Showing <strong className="text-white">{start}–{end}</strong> of{" "}
-        <strong className="text-white">{totalItems}</strong> {itemLabel}
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#2E2E2E] bg-[#1C1C1C] px-4 py-2.5">
+      <span className="text-xs text-[#A3A3A3] tabular-nums">
+        Showing <strong className="font-semibold text-[#F5F5F5]">{start}–{end}</strong> of{" "}
+        <strong className="font-semibold text-[#F5F5F5]">{totalItems}</strong> {itemLabel}
       </span>
       <div className="flex items-center gap-1.5">
         <button
           type="button"
           disabled={safePage <= 1}
           onClick={() => onPageChange(1)}
-          className="rounded-full bg-white/[0.04] px-2.5 py-1 font-mono-tech text-[10px] text-[#d1d5db] ring-1 ring-white/[0.08] hover:bg-white/[0.1] disabled:opacity-35 cursor-pointer"
+          className="rounded-md border border-[#2E2E2E] bg-[#262626] px-2.5 py-1 text-xs text-[#A3A3A3] transition-colors duration-150 hover:border-[#404040] hover:text-[#F5F5F5] disabled:opacity-35 cursor-pointer"
         >
           First
         </button>
@@ -183,26 +183,26 @@ export function StudioPagination({
           type="button"
           disabled={safePage <= 1}
           onClick={() => onPageChange(safePage - 1)}
-          className="rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-white ring-1 ring-white/[0.08] hover:bg-white/[0.12] disabled:opacity-35 cursor-pointer"
+          className="rounded-md border border-[#2E2E2E] bg-[#262626] px-3 py-1 text-xs font-medium text-[#F5F5F5] transition-colors duration-150 hover:border-[#404040] disabled:opacity-35 cursor-pointer"
         >
-          ← Prev
+          Previous
         </button>
-        <span className="px-2 font-mono-tech text-[11px] text-[#e5e7eb]">
-          Page {safePage} / {totalPages}
+        <span className="px-2 font-mono-tech text-xs text-[#A3A3A3]">
+          {safePage} / {totalPages}
         </span>
         <button
           type="button"
           disabled={safePage >= totalPages}
           onClick={() => onPageChange(safePage + 1)}
-          className="rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-white ring-1 ring-white/[0.08] hover:bg-white/[0.12] disabled:opacity-35 cursor-pointer"
+          className="rounded-md border border-[#2E2E2E] bg-[#262626] px-3 py-1 text-xs font-medium text-[#F5F5F5] transition-colors duration-150 hover:border-[#404040] disabled:opacity-35 cursor-pointer"
         >
-          Next →
+          Next
         </button>
         <button
           type="button"
           disabled={safePage >= totalPages}
           onClick={() => onPageChange(totalPages)}
-          className="rounded-full bg-white/[0.04] px-2.5 py-1 font-mono-tech text-[10px] text-[#d1d5db] ring-1 ring-white/[0.08] hover:bg-white/[0.1] disabled:opacity-35 cursor-pointer"
+          className="rounded-md border border-[#2E2E2E] bg-[#262626] px-2.5 py-1 text-xs text-[#A3A3A3] transition-colors duration-150 hover:border-[#404040] hover:text-[#F5F5F5] disabled:opacity-35 cursor-pointer"
         >
           Last
         </button>

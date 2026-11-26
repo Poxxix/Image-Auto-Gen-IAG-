@@ -24,6 +24,7 @@ from config import (
     METADATA_PROVIDERS,
     METADATA_VISION_MODES,
     PROVIDER_MODELS,
+    REFERENCE_STRENGTH_MODES,
     REFERENCES_DIR,
     STUDIO_PRESETS,
     ensure_directories,
@@ -33,6 +34,7 @@ from config import (
     normalize_filename_style,
     normalize_metadata_export_mode,
     normalize_picassy_categories,
+    normalize_reference_strength,
 )
 from database.db_manager import db, slugify_theme
 from modules.app_logging import logger
@@ -42,6 +44,7 @@ from modules.export_manager import (
     get_or_build_job_csv_bytes,
     open_export_folder_in_os,
     pick_folder_via_os_dialog,
+    reconcile_job_export_folder,
     relocate_job_export_dir,
     sync_generation_and_manifest,
     sync_job_manifest,
@@ -114,10 +117,21 @@ class UpdateReferenceRequest(BaseModel):
     title: str
 
 
+class BulkDeleteReferencesRequest(BaseModel):
+    reference_ids: List[int] = Field(default_factory=list)
+    source_type: Optional[str] = None
+    delete_all: bool = False
+
+
+class BulkDeleteGenerationsRequest(BaseModel):
+    generation_ids: List[int] = Field(default_factory=list)
+
+
 class CreateJobRequest(BaseModel):
     theme: str
     base_prompt: str = ""
     reference_mode: str = "prompt_only"          # prompt_only | local_upload | pinterest
+    reference_strength: str = "balanced"         # subject_keep | balanced | style_only
     run_mode: str = "fixed"                      # fixed | continuous
     target_count: int = Field(default=6, ge=1, le=1000)
     batch_size: int = Field(default=4, ge=1, le=50)
@@ -147,6 +161,7 @@ class UpdateJobRequest(BaseModel):
     theme: Optional[str] = None
     base_prompt: Optional[str] = None
     reference_mode: Optional[str] = None
+    reference_strength: Optional[str] = None
     run_mode: Optional[str] = None
     target_count: Optional[int] = None
     batch_size: Optional[int] = None
@@ -266,6 +281,7 @@ def get_system_status() -> Dict[str, Any]:
         "metadata_export_modes": METADATA_EXPORT_MODES,
         "export_image_formats": EXPORT_IMAGE_FORMATS,
         "filename_styles": FILENAME_STYLES,
+        "reference_strength_modes": REFERENCE_STRENGTH_MODES,
         "metadata_providers": METADATA_PROVIDERS,
         "metadata_vision_modes": METADATA_VISION_MODES,
         "picassy_categories": normalize_picassy_categories(
@@ -395,7 +411,7 @@ def api_import_axes(req: ImportAxesRequest) -> Dict[str, Any]:
 @app.get("/api/references")
 def api_list_references(
     source_type: Optional[str] = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=500, ge=1, le=2000),
 ) -> Dict[str, Any]:
     return {
         "references": db.list_references(source_type=source_type, limit=limit),
@@ -478,6 +494,29 @@ def api_delete_reference(ref_id: int) -> Dict[str, Any]:
     return {"deleted": True, "id": ref_id}
 
 
+@app.post("/api/references/bulk-delete")
+def api_bulk_delete_references(req: BulkDeleteReferencesRequest) -> Dict[str, Any]:
+    deleted_list = db.delete_references_bulk(
+        ref_ids=req.reference_ids or None,
+        source_type=req.source_type,
+        delete_all=req.delete_all,
+    )
+    deleted_ids: List[int] = []
+    for item in deleted_list:
+        deleted_ids.append(int(item["id"]))
+        path_obj = Path(item.get("file_path") or "")
+        if path_obj.exists():
+            try:
+                path_obj.unlink()
+            except Exception:
+                pass
+    return {
+        "deleted": True,
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+    }
+
+
 # =============================================================================
 # Jobs & Variation Planning Endpoints
 # =============================================================================
@@ -545,6 +584,8 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     if req.run_mode == "continuous":
         initial_count = min(initial_count, req.session_cap)
 
+    ref_strength = normalize_reference_strength(req.reference_strength, default="balanced")
+
     try:
         planned_turns = plan_job_variations(
             theme=req.theme,
@@ -554,6 +595,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
             aspect_ratio=req.aspect_ratio,
             model=req.model,
             reference_mode=req.reference_mode,
+            reference_strength=ref_strength,
             reference_ids=ref_ids,
             cycle_references=req.cycle_references,
             preset_id=req.preset_id,
@@ -610,6 +652,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         theme=req.theme,
         base_prompt=req.base_prompt,
         reference_mode=req.reference_mode,
+        reference_strength=ref_strength,
         run_mode=req.run_mode,
         target_count=req.target_count,
         batch_size=req.batch_size,
@@ -712,6 +755,14 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         except ValueError as verr:
             raise HTTPException(status_code=400, detail=str(verr))
 
+    if "reference_strength" in updates:
+        try:
+            updates["reference_strength"] = normalize_reference_strength(
+                updates["reference_strength"], strict=True
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
+
     if "preferred_cdp_slot" in updates:
         slot_num = int(updates["preferred_cdp_slot"])
         if slot_num < 0 or slot_num > MAX_CDP_SLOTS:
@@ -766,11 +817,12 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
 
     # If theme, base_prompt, fixed_elements, or variation_axes (enabled_axes / custom_axis_label)
     # were updated on the job, recompose prompt_final for unlocked `planned` turns so changes apply immediately.
-    if any(k in updates for k in ("theme", "base_prompt", "fixed_elements", "variation_axes")):
+    if any(k in updates for k in ("theme", "base_prompt", "fixed_elements", "variation_axes", "reference_strength")):
         job_fixed = updated.get("fixed_elements") or {}
         job_va = updated.get("variation_axes") or {}
         job_enabled = job_va.get("enabled_axes")
         custom_label = str(job_va.get("custom_axis_label") or "Custom Variation")
+        ref_str = str(updated.get("reference_strength") or "balanced")
         for gen in updated.get("generations") or []:
             if gen.get("status") == "planned" and not gen.get("is_locked"):
                 turn_axes = dict(gen.get("variation_axes") or {})
@@ -784,6 +836,7 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
                     turn_axes=turn_axes,
                     has_reference=bool(gen.get("reference_id")),
                     reference_reused=False,
+                    reference_strength=ref_str,
                     variation_number=int(gen["index_num"]),
                     enabled_axes=job_enabled,
                     custom_axis_label=custom_label,
@@ -876,6 +929,7 @@ def api_replan_job(job_id: int) -> Dict[str, Any]:
         aspect_ratio=refreshed.get("aspect_ratio") or "1:1",
         model=refreshed.get("model") or "chrome-cdp/gemini",
         reference_mode=refreshed.get("reference_mode") or "prompt_only",
+        reference_strength=refreshed.get("reference_strength") or "balanced",
         reference_ids=refreshed.get("reference_ids") or [],
         cycle_references=bool(refreshed.get("cycle_references", True)),
         preset_id=refreshed.get("preset_id") or "",
@@ -913,6 +967,7 @@ def api_add_generation(job_id: int, req: AddGenerationRequest) -> Dict[str, Any]
             aspect_ratio=job.get("aspect_ratio") or "1:1",
             model=job.get("model") or "chrome-cdp/gemini",
             reference_mode=job.get("reference_mode") or "prompt_only",
+            reference_strength=job.get("reference_strength") or "balanced",
             reference_ids=[req.reference_id] if req.reference_id else (job.get("reference_ids") or []),
             cycle_references=True,
             preset_id=job.get("preset_id") or "",
@@ -1099,6 +1154,40 @@ def api_delete_generation(gen_id: int) -> Dict[str, Any]:
     if del_res:
         cleanup_and_resequence_after_delete_generation(job_id, del_res)
     return {"deleted": True, "job": db.get_job(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/generations/bulk-delete")
+def api_bulk_delete_generations(
+    job_id: int,
+    req: BulkDeleteGenerationsRequest,
+) -> Dict[str, Any]:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} not found.")
+    clean_ids = [int(x) for x in (req.generation_ids or []) if int(x) > 0]
+    if not clean_ids:
+        return {"deleted": False, "deleted_count": 0, "job": job}
+    for gid in clean_ids:
+        runner.notify_generation_deleted(gid)
+    del_res = db.delete_generations_bulk_with_resequence(job_id, clean_ids)
+    deleted_count = 0
+    if del_res:
+        deleted_count = len(del_res.get("deleted_items") or [])
+        cleanup_and_resequence_after_delete_generation(job_id, del_res)
+    return {
+        "deleted": deleted_count > 0,
+        "deleted_count": deleted_count,
+        "job": db.get_job(job_id),
+    }
+
+
+@app.post("/api/jobs/{job_id}/reconcile-folder")
+def api_reconcile_job_folder(job_id: int) -> Dict[str, Any]:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} not found.")
+    res = reconcile_job_export_folder(job_id)
+    return res
 
 
 @app.post("/api/generations/{gen_id}/skip")

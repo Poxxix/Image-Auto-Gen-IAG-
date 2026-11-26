@@ -11,7 +11,6 @@ import {
   X,
 } from "@phosphor-icons/react"
 import { StudioPanel, StudioButton, StudioBadge } from "@/components/shared/StudioPrimitives"
-import { BrandIcon } from "@/components/shared/BrandIcon"
 import {
   Select,
   SelectContent,
@@ -104,7 +103,9 @@ export function SettingsPanel({
     metadata_api_key: settings?.metadata_api_key || "",
     metadata_vision_mode: settings?.metadata_vision_mode || "thumbnail_512",
     picassy_categories:
-      settings?.picassy_categories || picassyCategories || DEFAULT_PICASSY_CATEGORIES,
+      settings?.picassy_categories ||
+      picassyCategories ||
+      DEFAULT_PICASSY_CATEGORIES,
     cdp_slots: settings?.cdp_slots || DEFAULT_SLOTS,
     optimize_prompt_english: settings?.optimize_prompt_english ?? true,
     remove_watermark: settings?.remove_watermark ?? true,
@@ -135,7 +136,9 @@ export function SettingsPanel({
         ...settings,
         cdp_slots: settings.cdp_slots || prev.cdp_slots || DEFAULT_SLOTS,
         picassy_categories:
-          settings.picassy_categories || prev.picassy_categories || DEFAULT_PICASSY_CATEGORIES,
+          settings.picassy_categories ||
+          prev.picassy_categories ||
+          DEFAULT_PICASSY_CATEGORIES,
       }))
     }
   }, [settings])
@@ -211,18 +214,15 @@ export function SettingsPanel({
   const isCdpOnline = Boolean(cdp?.connected || cdp?.online)
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-5">
       {/* Header */}
-      <div className="flex flex-col justify-between gap-6 border-b border-white/[0.06] pb-8 lg:flex-row lg:items-end">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[#2E2E2E] pb-4">
         <div>
-          <p className="font-mono-tech text-[11px] uppercase tracking-[0.22em] text-[#9ca3af]">
-            05 · STUDIO CONFIGURATION
-          </p>
-          <h1 className="mt-2 font-display text-3xl sm:text-4xl font-semibold tracking-tight text-[#f4f5f7]">
-            Providers, Exports & Limits.
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-[#F5F5F5]">
+            Settings
           </h1>
-          <p className="mt-2 max-w-2xl text-sm text-[#9ca3af]">
-            Configure your AI generation providers, default export folder, output image format, and session safety caps. API keys are never written to manifest.json or logs.
+          <p className="mt-0.5 max-w-2xl text-xs sm:text-sm text-[#A3A3A3]">
+            Manage Chrome CDP browser slots, Picassy categories, SEO metadata routing, and generation safety limits.
           </p>
         </div>
 
@@ -230,24 +230,27 @@ export function SettingsPanel({
           variant="primary"
           loading={saving}
           onClick={handleSave}
-          icon={<FloppyDisk size={16} weight="light" />}
+          icon={<FloppyDisk size={15} />}
         >
-          {saving ? "Saving…" : "Save Studio Settings"}
+          {saving ? "Saving…" : "Save settings"}
         </StudioButton>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Left 7 Columns: AI Providers & Credentials */}
-        <div className="lg:col-span-7 flex flex-col gap-6">
-          <StudioPanel
-            eyebrow="4-SLOT CHROME CDP POOL (:9222–:9225 · MAX 4 ON 16 GB RAM)"
-            title="Multi-Job Browser Sessions (1 Job = 1 Slot)"
-          >
-            <div className="flex flex-col gap-4">
-              <p className="text-xs leading-relaxed text-[#9ca3af]">
-                Enable up to 4 isolated Chrome profiles (:9222..:9225) to run 4 independent image sets in parallel. If one account logs out or hits rate-limit, only its Job pauses while other slots keep running. Toggling a slot switch or clicking <strong>Launch</strong> saves &amp; wakes workers immediately.
+      {/* 2-Column Settings Sheet */}
+      <StudioPanel noPadding>
+        <div className="divide-y divide-[#2E2E2E]">
+          {/* SECTION 1: Chrome CDP Multi-Slot Pool */}
+          <div className="grid grid-cols-1 gap-6 p-5 sm:p-6 lg:grid-cols-12">
+            <div className="lg:col-span-4 space-y-1.5">
+              <h2 className="text-sm font-semibold text-[#F5F5F5]">
+                Chrome CDP 4-slot pool
+              </h2>
+              <p className="text-xs leading-relaxed text-[#A3A3A3]">
+                Run up to 4 isolated Chrome profiles (:9222–:9225) in parallel. Each running set locks to a single slot so one paused session never blocks the others.
               </p>
+            </div>
 
+            <div className="lg:col-span-8 flex flex-col gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {(form.cdp_slots || DEFAULT_SLOTS).map((slotCfg) => {
                   const live = cdpSlots.find((s) => s.slot_id === slotCfg.slot_id)
@@ -258,11 +261,11 @@ export function SettingsPanel({
                   return (
                     <div
                       key={slotCfg.slot_id}
-                      className="flex flex-col gap-2.5 rounded-2xl bg-white/[0.03] p-3.5 ring-1 ring-white/[0.08]"
+                      className="flex flex-col gap-2.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-3"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-mono-tech text-[11px] font-semibold text-amber-300">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="font-mono-tech text-xs font-semibold text-[#D4D4D4]">
                             :{slotCfg.port}
                           </span>
                           <input
@@ -271,14 +274,15 @@ export function SettingsPanel({
                             onChange={(e) =>
                               setForm((f) => ({
                                 ...f,
-                                cdp_slots: (f.cdp_slots || DEFAULT_SLOTS).map((item) =>
-                                  item.slot_id === slotCfg.slot_id
-                                    ? { ...item, label: e.target.value }
-                                    : item
+                                cdp_slots: (f.cdp_slots || DEFAULT_SLOTS).map(
+                                  (item) =>
+                                    item.slot_id === slotCfg.slot_id
+                                      ? { ...item, label: e.target.value }
+                                      : item
                                 ),
                               }))
                             }
-                            className="h-7 min-w-0 flex-1 rounded-lg bg-black/30 px-2 text-xs text-white ring-1 ring-white/[0.08]"
+                            className="h-7 min-w-0 flex-1 rounded border border-[#2E2E2E] bg-[#262626] px-2 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
                           />
                         </div>
                         <Switch
@@ -290,22 +294,20 @@ export function SettingsPanel({
                         />
                       </div>
 
-                      <div className="flex items-center justify-between gap-2 text-[10px]">
+                      <div className="flex items-center justify-between gap-2">
                         <StudioBadge
                           tone={
-                            live?.active_job_id
-                              ? "sky"
-                              : !slotCfg.enabled
-                                ? (online ? "amber" : "neutral")
-                                : online
-                                  ? "emerald"
-                                  : "amber"
+                            live?.active_job_id || (slotCfg.enabled && online)
+                              ? "emerald"
+                              : "neutral"
                           }
                           label={
                             live?.active_job_id
-                              ? `Running Set #${live.active_job_id}`
+                              ? `Set #${live.active_job_id}`
                               : !slotCfg.enabled
-                                ? (online ? "Connected (Disabled)" : "Disabled")
+                                ? online
+                                  ? "Paused"
+                                  : "Off"
                                 : online
                                   ? "Online"
                                   : "Standby"
@@ -316,19 +318,23 @@ export function SettingsPanel({
                             variant="secondary"
                             loading={isBusy}
                             onClick={() => handleLaunchSlot(slotCfg.slot_id, false)}
-                            icon={<TerminalWindow size={12} weight="light" />}
+                            icon={<TerminalWindow size={12} />}
                             className="h-7 px-2.5 text-[11px]"
                           >
-                            {online ? (slotCfg.enabled ? "Focus" : "Enable & Focus") : "Launch"}
+                            {online
+                              ? slotCfg.enabled
+                                ? "Focus"
+                                : "Enable"
+                              : "Launch"}
                           </StudioButton>
                           {online && (
                             <StudioButton
                               variant="secondary"
                               loading={isBusy}
                               onClick={() => handleLaunchSlot(slotCfg.slot_id, true)}
-                              icon={<ArrowsClockwise size={12} weight="light" />}
+                              icon={<ArrowsClockwise size={12} />}
                               className="h-7 px-2 text-[11px]"
-                              title={`Restart Chrome Slot #${slotCfg.slot_id} (:${slotCfg.port})`}
+                              title={`Restart Chrome slot #${slotCfg.slot_id} (:${slotCfg.port})`}
                             >
                               Restart
                             </StudioButton>
@@ -341,15 +347,17 @@ export function SettingsPanel({
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Default Model Provider
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default generation model
                   </label>
                   <Select
                     value={form.default_model}
-                    onValueChange={(v) => v && setForm((f) => ({ ...f, default_model: v }))}
+                    onValueChange={(v) =>
+                      v && setForm((f) => ({ ...f, default_model: v }))
+                    }
                   >
-                    <SelectTrigger className="h-11 rounded-2xl bg-white/[0.04] px-4 text-xs text-white ring-1 ring-white/[0.08]">
+                    <SelectTrigger className="h-9 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -362,9 +370,9 @@ export function SettingsPanel({
                   </Select>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Default Metadata Language
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default metadata language
                   </label>
                   <Select
                     value={form.default_metadata_language}
@@ -372,7 +380,7 @@ export function SettingsPanel({
                       v && setForm((f) => ({ ...f, default_metadata_language: v }))
                     }
                   >
-                    <SelectTrigger className="h-11 rounded-2xl bg-white/[0.04] px-4 text-xs text-white ring-1 ring-white/[0.08]">
+                    <SelectTrigger className="h-9 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -385,378 +393,53 @@ export function SettingsPanel({
                   </Select>
                 </div>
               </div>
-
-              {/* Default Post-Image Caption & Export Mode */}
-              <div className="rounded-2xl bg-white/[0.025] p-4 ring-1 ring-white/[0.08] flex flex-col gap-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <p className="text-xs font-medium text-white">
-                      Default Post-Image Export Mode
-                    </p>
-                    <p className="text-[11px] text-[#9ca3af]">
-                      Choose default output after each generated image (Picassy pin-import.csv or Image Only).
-                    </p>
-                  </div>
-                  <Select
-                    value={form.default_metadata_export_mode || "csv"}
-                    onValueChange={(v) =>
-                      v &&
-                      setForm((f) => ({
-                        ...f,
-                        default_metadata_export_mode:
-                          v as StudioSettings["default_metadata_export_mode"],
-                      }))
-                    }
-                  >
-                    <SelectTrigger className="h-10 w-52 rounded-xl bg-white/[0.04] px-3 text-xs text-white ring-1 ring-white/[0.08]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="csv">Xuất CSV (pin-import.csv)</SelectItem>
-                      <SelectItem value="none">Không xuất (Chỉ ảnh)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-amber-200/90">
-                    Default Post-Image Caption Prompt
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={form.default_caption_prompt || ""}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        default_caption_prompt: e.target.value,
-                      }))
-                    }
-                    className="w-full rounded-xl bg-white/[0.03] p-3 text-xs text-white ring-1 ring-white/[0.08]"
-                  />
-                </div>
-
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
-                  <div>
-                    <p className="text-xs font-medium text-white">
-                      Default Filename Style
-                    </p>
-                    <p className="text-[11px] text-[#9ca3af]">
-                      Picassy SEO format (<code className="text-amber-300">keyword-slug-1</code>) vs legacy (<code className="text-[#d1d5db]">001_slug</code>).
-                    </p>
-                  </div>
-                  <Select
-                    value={form.default_filename_style || "picassy_slug"}
-                    onValueChange={(v) =>
-                      v &&
-                      setForm((f) => ({
-                        ...f,
-                        default_filename_style: v as FilenameStyle,
-                      }))
-                    }
-                  >
-                    <SelectTrigger className="h-10 w-56 rounded-xl bg-white/[0.04] px-3 text-xs text-white ring-1 ring-white/[0.08]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="picassy_slug">Picassy (keyword-1, 2...)</SelectItem>
-                      <SelectItem value="studio_seq">Studio Legacy (001_slug)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Option 1A Small Metadata Model Router */}
-                <div className="rounded-xl bg-sky-500/[0.05] p-3.5 ring-1 ring-sky-400/20 flex flex-col gap-3">
-                  <div>
-                    <p className="text-xs font-semibold text-sky-200">
-                      Option 1A · Small Metadata AI Engine (Offloads Prompt #2 from Chrome CDP)
-                    </p>
-                    <p className="text-[11px] text-[#9ca3af]">
-                      Keep Chrome CDP focused 100% on high-quality image generation (Prompt #1) while a cheap Vision/Text model writes Picassy Title (≤60), Description (≤160), and Alt Text (100–125).
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                        Metadata Router
-                      </label>
-                      <Select
-                        value={form.metadata_provider || "auto"}
-                        onValueChange={(v) =>
-                          v &&
-                          setForm((f) => ({
-                            ...f,
-                            metadata_provider: v as MetadataProviderType,
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="h-9 rounded-xl bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.08]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="auto">Auto (API Key → Template)</SelectItem>
-                          <SelectItem value="gemini">Google Gemini REST</SelectItem>
-                          <SelectItem value="openai">OpenAI Mini/Nano REST</SelectItem>
-                          <SelectItem value="openai_compatible">OpenAI-Compatible (Ollama/OpenRouter)</SelectItem>
-                          <SelectItem value="template">Instant Grammatical (0 Token)</SelectItem>
-                          <SelectItem value="browser_cdp">Browser CDP Turn #2 (Slow/High Quota)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                        Small Model ID
-                      </label>
-                      <input
-                        type="text"
-                        value={form.metadata_model || ""}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, metadata_model: e.target.value }))
-                        }
-                        placeholder="gemini-2.0-flash / gpt-4o-mini"
-                        className="h-9 rounded-xl bg-black/30 px-2.5 font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                        Vision Payload Mode
-                      </label>
-                      <Select
-                        value={form.metadata_vision_mode || "thumbnail_512"}
-                        onValueChange={(v) =>
-                          v &&
-                          setForm((f) => ({
-                            ...f,
-                            metadata_vision_mode: v as MetadataVisionMode,
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="h-9 rounded-xl bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.08]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="thumbnail_512">512px JPEG Vision (~35KB)</SelectItem>
-                          <SelectItem value="text_only">Text Prompt Only (0 Image Token)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                        OpenAI-Compatible Base URL (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={form.metadata_api_base_url || ""}
-                        onChange={(e) =>
-                          setForm((f) => ({
-                            ...f,
-                            metadata_api_base_url: e.target.value,
-                          }))
-                        }
-                        placeholder="https://openrouter.ai/api/v1 or http://127.0.0.1:11434/v1"
-                        className="h-9 rounded-xl bg-black/30 px-2.5 font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                        Metadata API Key Pool (1 key per line or comma)
-                      </label>
-                      <textarea
-                        rows={2}
-                        value={form.metadata_api_key || ""}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, metadata_api_key: e.target.value }))
-                        }
-                        placeholder="Leave blank to reuse Gemini/OpenAI keys below, or paste multiple keys for auto-rotation..."
-                        className="rounded-xl bg-black/30 p-2 font-mono-tech text-[11px] text-white ring-1 ring-white/[0.08]"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Configurable Picassy Categories List */}
-                <div className="flex flex-col gap-2 border-t border-white/[0.06] pt-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-medium uppercase tracking-wider text-[#d1d5db]">
-                      Picassy Categories ({(form.picassy_categories || DEFAULT_PICASSY_CATEGORIES).length})
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        value={newCategoryInput}
-                        onChange={(e) => setNewCategoryInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault()
-                            handleAddCategory()
-                          }
-                        }}
-                        placeholder="New category..."
-                        className="h-7 w-36 rounded-lg bg-black/30 px-2.5 text-xs text-white ring-1 ring-white/[0.08]"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddCategory}
-                        className="inline-flex h-7 items-center gap-1 rounded-lg bg-white/[0.08] px-2.5 text-[11px] font-medium text-white hover:bg-white/[0.15] cursor-pointer"
-                      >
-                        <Plus size={12} /> Add
-                      </button>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(form.picassy_categories || DEFAULT_PICASSY_CATEGORIES).map((cat) => (
-                      <span
-                        key={cat}
-                        className="inline-flex items-center gap-1 rounded-full bg-white/[0.05] px-2.5 py-1 text-[11px] text-[#e5e7eb] ring-1 ring-white/[0.08]"
-                      >
-                        {cat}
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveCategory(cat)}
-                          title={`Remove ${cat}`}
-                          className="rounded-full p-0.5 text-[#9ca3af] hover:bg-rose-500/20 hover:text-rose-300 cursor-pointer"
-                        >
-                          <X size={10} />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-xs text-[#9ca3af]">
-                    Enable AI Picassy Metadata after each image (uses Option 1A Engine above unless set to Browser CDP)
-                  </span>
-                  <Switch
-                    checked={form.use_ai_caption_prompt ?? true}
-                    onCheckedChange={(checked) =>
-                      setForm((f) => ({ ...f, use_ai_caption_prompt: checked }))
-                    }
-                  />
-                </div>
-              </div>
             </div>
-          </StudioPanel>
+          </div>
 
-          <StudioPanel
-            eyebrow="OFFICIAL API KEYS (OPTIONAL)"
-            title="Direct API & Authorized Integrations"
-          >
-            <div className="flex flex-col gap-4">
-              <div className="flex items-center gap-2 rounded-xl bg-emerald-500/10 px-3.5 py-2.5 text-xs text-emerald-200 ring-1 ring-emerald-400/25">
-                <ShieldCheck size={16} weight="fill" />
-                <span>
-                  Keys are stored locally in SQLite and are never exported into manifest.json, sidecar JSON, or logs.
-                </span>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-[#d1d5db]">
-                  <Key size={14} weight="light" />
-                  Google Gemini / Imagen API Key
-                </label>
-                <input
-                  type="password"
-                  value={form.gemini_api_key}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, gemini_api_key: e.target.value }))
-                  }
-                  placeholder="AIzaSy... (Enables Imagen 3 API & fast Gemini Vision metadata)"
-                  className="h-11 w-full rounded-2xl bg-white/[0.03] px-4 font-mono-tech text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.08]"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-[#d1d5db]">
-                  <Key size={14} weight="light" />
-                  OpenAI API Key
-                </label>
-                <input
-                  type="password"
-                  value={form.openai_api_key}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, openai_api_key: e.target.value }))
-                  }
-                  placeholder="sk-... (Enables OpenAI GPT-Image-1 official API)"
-                  className="h-11 w-full rounded-2xl bg-white/[0.03] px-4 font-mono-tech text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.08]"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-[#d1d5db]">
-                  <Key size={14} weight="light" />
-                  Pinterest API v5 Access Token (Optional)
-                </label>
-                <input
-                  type="password"
-                  value={form.pinterest_access_token}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      pinterest_access_token: e.target.value,
-                    }))
-                  }
-                  placeholder="pina_... (Optional official Pinterest v5 API token)"
-                  className="h-11 w-full rounded-2xl bg-white/[0.03] px-4 font-mono-tech text-xs text-white placeholder:text-[#646b78] ring-1 ring-white/[0.08]"
-                />
-              </div>
+          {/* SECTION 2: Picassy Categories & Export Defaults */}
+          <div className="grid grid-cols-1 gap-6 p-5 sm:p-6 lg:grid-cols-12">
+            <div className="lg:col-span-4 space-y-1.5">
+              <h2 className="text-sm font-semibold text-[#F5F5F5]">
+                Picassy categories &amp; export defaults
+              </h2>
+              <p className="text-xs leading-relaxed text-[#A3A3A3]">
+                Set your default save folder, image file format, filename convention, and the list of Picassy categories available when creating sets.
+              </p>
             </div>
-          </StudioPanel>
-        </div>
 
-        {/* Right 5 Columns: Export Format, Limits & Workspace Reset */}
-        <div className="lg:col-span-5 flex flex-col gap-6">
-          <StudioPanel
-            eyebrow="EXPORT & FILE SYSTEM"
-            title="Output Directory & Format"
-          >
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                  Default Export Root Directory
+            <div className="lg:col-span-8 flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-[#A3A3A3]">
+                  Default export root folder
                 </label>
                 <div className="flex items-center gap-2">
-                  <div className="relative flex flex-1 items-center">
-                    <FolderOpen
-                      size={15}
-                      weight="light"
-                      className="pointer-events-none absolute left-3.5 text-[#9ca3af]"
-                    />
-                    <input
-                      type="text"
-                      value={form.export_root_dir}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, export_root_dir: e.target.value }))
-                      }
-                      className="h-11 w-full rounded-2xl bg-white/[0.03] pl-10 pr-4 font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                    />
-                  </div>
-                  <button
-                    type="button"
+                  <input
+                    type="text"
+                    value={form.export_root_dir}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, export_root_dir: e.target.value }))
+                    }
+                    className="h-9 flex-1 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
+                  />
+                  <StudioButton
+                    variant="secondary"
                     onClick={async () => {
                       const chosen = await onPickExportFolder()
                       if (chosen) {
                         setForm((f) => ({ ...f, export_root_dir: chosen }))
                       }
                     }}
-                    className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-2xl bg-white/[0.06] px-3.5 text-xs font-medium text-[#f4f5f7] ring-1 ring-white/[0.1] hover:bg-white/[0.12] cursor-pointer"
-                    title="Choose folder in macOS Finder"
+                    icon={<FolderOpen size={14} />}
                   >
-                    <FolderOpen size={15} weight="light" />
                     Browse…
-                  </button>
+                  </StudioButton>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Export Image Format
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default image format
                   </label>
                   <Select
                     value={form.export_image_format}
@@ -764,16 +447,17 @@ export function SettingsPanel({
                       v &&
                       setForm((f) => ({
                         ...f,
-                        export_image_format: v as StudioSettings["export_image_format"],
+                        export_image_format:
+                          v as StudioSettings["export_image_format"],
                       }))
                     }
                   >
-                    <SelectTrigger className="h-11 rounded-2xl bg-white/[0.04] px-4 text-xs text-white ring-1 ring-white/[0.08]">
+                    <SelectTrigger className="h-9 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="original">
-                        Original (Preserve Provenance)
+                        Original (preserve provenance)
                       </SelectItem>
                       <SelectItem value="png">PNG (.png)</SelectItem>
                       <SelectItem value="jpg">JPEG (.jpg)</SelectItem>
@@ -782,9 +466,9 @@ export function SettingsPanel({
                   </Select>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-medium uppercase tracking-wider text-[#9ca3af]">
-                    Default Aspect Ratio
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default aspect ratio
                   </label>
                   <Select
                     value={form.default_aspect_ratio}
@@ -792,7 +476,7 @@ export function SettingsPanel({
                       v && setForm((f) => ({ ...f, default_aspect_ratio: v }))
                     }
                   >
-                    <SelectTrigger className="h-11 rounded-2xl bg-white/[0.04] px-4 text-xs text-white ring-1 ring-white/[0.08]">
+                    <SelectTrigger className="h-9 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -804,12 +488,63 @@ export function SettingsPanel({
                     </SelectContent>
                   </Select>
                 </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default post-image export mode
+                  </label>
+                  <Select
+                    value={form.default_metadata_export_mode || "csv"}
+                    onValueChange={(v) =>
+                      v &&
+                      setForm((f) => ({
+                        ...f,
+                        default_metadata_export_mode:
+                          v as StudioSettings["default_metadata_export_mode"],
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="csv">Picassy CSV (pin-import.csv)</SelectItem>
+                      <SelectItem value="none">Images only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default filename style
+                  </label>
+                  <Select
+                    value={form.default_filename_style || "picassy_slug"}
+                    onValueChange={(v) =>
+                      v &&
+                      setForm((f) => ({
+                        ...f,
+                        default_filename_style: v as FilenameStyle,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="picassy_slug">
+                        Picassy (keyword-1, 2…)
+                      </SelectItem>
+                      <SelectItem value="studio_seq">Legacy (001_slug)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 pt-1">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                    Default Set Size
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Default set size
                   </label>
                   <input
                     type="number"
@@ -819,15 +554,18 @@ export function SettingsPanel({
                     onChange={(e) =>
                       setForm((f) => ({
                         ...f,
-                        default_target_count: Math.max(1, Math.min(1000, Number(e.target.value) || 6)),
+                        default_target_count: Math.max(
+                          1,
+                          Math.min(1000, Number(e.target.value) || 6)
+                        ),
                       }))
                     }
-                    className="h-10 rounded-xl bg-white/[0.03] px-3 text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
+                    className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-center font-mono-tech text-xs text-[#F5F5F5]"
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                    Wave Batch
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Wave batch
                   </label>
                   <input
                     type="number"
@@ -837,15 +575,18 @@ export function SettingsPanel({
                     onChange={(e) =>
                       setForm((f) => ({
                         ...f,
-                        default_batch_size: Math.max(1, Math.min(50, Number(e.target.value) || 4)),
+                        default_batch_size: Math.max(
+                          1,
+                          Math.min(50, Number(e.target.value) || 4)
+                        ),
                       }))
                     }
-                    className="h-10 rounded-xl bg-white/[0.03] px-3 text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
+                    className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-center font-mono-tech text-xs text-[#F5F5F5]"
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-mono-tech uppercase text-[#9ca3af]">
-                    Session Cap
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Session cap
                   </label>
                   <input
                     type="number"
@@ -855,164 +596,471 @@ export function SettingsPanel({
                     onChange={(e) =>
                       setForm((f) => ({
                         ...f,
-                        default_session_cap: Math.max(2, Math.min(1000, Number(e.target.value) || 20)),
+                        default_session_cap: Math.max(
+                          2,
+                          Math.min(1000, Number(e.target.value) || 20)
+                        ),
                       }))
                     }
-                    className="h-10 rounded-xl bg-white/[0.03] px-3 text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
+                    className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 text-center font-mono-tech text-xs text-[#F5F5F5]"
                   />
                 </div>
               </div>
 
-              <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                <div>
-                  <p className="text-xs font-medium text-white">
-                    Auto-Remove Gemini Watermark
-                  </p>
-                  <p className="text-[11px] text-[#9ca3af]">
-                    Lossless Reverse Alpha Blending + Subpixel/Isophote Polish after each image
-                  </p>
-                </div>
-                <Switch
-                  checked={form.remove_watermark ?? true}
-                  onCheckedChange={(checked) =>
-                    setForm((f) => ({ ...f, remove_watermark: checked }))
-                  }
-                />
-              </div>
-
-              <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                <div>
-                  <p className="text-xs font-medium text-white">
-                    Open Fresh New Chat per Shot
-                  </p>
-                  <p className="text-[11px] text-[#9ca3af]">
-                    Starts an isolated New Chat thread for each image so prior shots cannot bias layout
-                  </p>
-                </div>
-                <Switch
-                  checked={form.fresh_chat_per_turn ?? true}
-                  onCheckedChange={(checked) =>
-                    setForm((f) => ({ ...f, fresh_chat_per_turn: checked }))
-                  }
-                />
-              </div>
-
-              <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                <div>
-                  <p className="text-xs font-medium text-white">
-                    Input Similarity Guard &amp; Auto Re-Roll
-                  </p>
-                  <p className="text-[11px] text-[#9ca3af]">
-                    Rejects images too close to reference input, rotates axes, and drops raw ref on final retry
-                  </p>
-                </div>
-                <Switch
-                  checked={form.reference_similarity_check ?? true}
-                  onCheckedChange={(checked) =>
-                    setForm((f) => ({
-                      ...f,
-                      reference_similarity_check: checked,
-                      drop_ref_on_similarity_retry: checked,
-                    }))
-                  }
-                />
-              </div>
-
-              <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                <span className="text-xs text-[#9ca3af]">
-                  Max Auto-Retries per Shot (on stall, network drop, or clone rejection)
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  max={4}
-                  value={form.max_turn_retries ?? 2}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      max_turn_retries: Math.max(0, Math.min(4, Number(e.target.value) || 0)),
-                    }))
-                  }
-                  className="h-9 w-16 rounded-xl bg-white/[0.04] text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                />
-              </div>
-
-              <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                <div>
-                  <p className="text-xs font-medium text-white">
-                    Recycle Chrome Browser Tab Interval (100–1000 Image Stability)
-                  </p>
-                  <p className="text-[11px] text-[#9ca3af]">
-                    Automatically opens a clean fresh browser tab every N shots to keep memory flat across huge sets
-                  </p>
-                </div>
-                <input
-                  type="number"
-                  min={5}
-                  max={100}
-                  value={form.cdp_recycle_tab_interval ?? 20}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      cdp_recycle_tab_interval: Math.max(5, Math.min(100, Number(e.target.value) || 20)),
-                    }))
-                  }
-                  className="h-9 w-16 rounded-xl bg-white/[0.04] text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                />
-              </div>
-
-              <div className="flex items-center justify-between border-t border-white/[0.06] pt-3">
-                <span className="text-xs text-[#9ca3af]">
-                  dHash Near-Duplicate Warning Threshold (0–16 bits)
-                </span>
-                <input
-                  type="number"
-                  min={1}
-                  max={16}
-                  value={form.dhash_warning_threshold}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      dhash_warning_threshold: Number(e.target.value) || 6,
-                    }))
-                  }
-                  className="h-9 w-16 rounded-xl bg-white/[0.04] text-center font-mono-tech text-xs text-white ring-1 ring-white/[0.08]"
-                />
-              </div>
-            </div>
-          </StudioPanel>
-
-          <StudioPanel
-            eyebrow="WORKSPACE MAINTENANCE"
-            title="Reset Studio History"
-          >
-            <div className="flex flex-col gap-3 text-xs text-[#9ca3af]">
-              <div className="flex items-center justify-between py-1">
-                <span>Also delete uploaded reference images</span>
-                <Switch checked={clearRefs} onCheckedChange={setClearRefs} />
-              </div>
-              <div className="flex items-center justify-between py-1">
-                <span>Also delete exported folders inside ./exports/</span>
-                <Switch
-                  checked={deleteExports}
-                  onCheckedChange={setDeleteExports}
-                />
-              </div>
-              <div className="pt-2">
-                <StudioButton
-                  variant="danger"
-                  loading={resetting}
-                  onClick={handleReset}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Trash size={14} weight="light" />
-                    Reset Studio Workspace
+              {/* Picassy Categories Manager */}
+              <div className="rounded-md border border-[#2E2E2E] bg-[#171717] p-3.5 flex flex-col gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-[#F5F5F5]">
+                    Picassy categories (
+                    {(form.picassy_categories || DEFAULT_PICASSY_CATEGORIES).length})
                   </span>
-                </StudioButton>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={newCategoryInput}
+                      onChange={(e) => setNewCategoryInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault()
+                          handleAddCategory()
+                        }
+                      }}
+                      placeholder="New category…"
+                      className="h-7 w-40 rounded border border-[#2E2E2E] bg-[#262626] px-2.5 text-xs text-[#F5F5F5] outline-none focus:border-[#A3A3A3]"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddCategory}
+                      className="inline-flex h-7 items-center gap-1 rounded bg-[#FAFAFA] px-2.5 text-xs font-semibold text-[#121212] hover:bg-[#E5E5E5] cursor-pointer"
+                    >
+                      <Plus size={12} /> Add
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(form.picassy_categories || DEFAULT_PICASSY_CATEGORIES).map(
+                    (cat) => (
+                      <span
+                        key={cat}
+                        className="inline-flex items-center gap-1 rounded border border-[#2E2E2E] bg-[#262626] px-2.5 py-1 text-xs text-[#F5F5F5]"
+                      >
+                        {cat}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveCategory(cat)}
+                          title={`Remove ${cat}`}
+                          className="rounded p-0.5 text-[#A3A3A3] hover:bg-[#EF4444]/15 hover:text-[#FCA5A5] cursor-pointer"
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    )
+                  )}
+                </div>
               </div>
             </div>
-          </StudioPanel>
+          </div>
+
+          {/* SECTION 3: Metadata AI Router & API Keys */}
+          <div className="grid grid-cols-1 gap-6 p-5 sm:p-6 lg:grid-cols-12">
+            <div className="lg:col-span-4 space-y-1.5">
+              <h2 className="text-sm font-semibold text-[#F5F5F5]">
+                Metadata AI router &amp; API keys
+              </h2>
+              <p className="text-xs leading-relaxed text-[#A3A3A3]">
+                Offload post-image SEO writing (Option 1A) to a lightweight Vision/Text model or grammatical engine so Chrome CDP saves 100% of its quota for image rendering. Keys stay in local SQLite only.
+              </p>
+            </div>
+
+            <div className="lg:col-span-8 flex flex-col gap-4">
+              <div className="flex items-center justify-between rounded-md border border-[#2E2E2E] bg-[#171717] px-3.5 py-2.5">
+                <div>
+                  <p className="text-xs font-semibold text-[#F5F5F5]">
+                    Enable AI Picassy metadata after each image
+                  </p>
+                  <p className="text-[11px] text-[#737373]">
+                    Generates Title (&le;60), sentence-case Description (&le;160), and Alt text (100–125)
+                  </p>
+                </div>
+                <Switch
+                  checked={form.use_ai_caption_prompt ?? true}
+                  onCheckedChange={(checked) =>
+                    setForm((f) => ({ ...f, use_ai_caption_prompt: checked }))
+                  }
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Metadata router
+                  </label>
+                  <Select
+                    value={form.metadata_provider || "auto"}
+                    onValueChange={(v) =>
+                      v &&
+                      setForm((f) => ({
+                        ...f,
+                        metadata_provider: v as MetadataProviderType,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto (API key → template)</SelectItem>
+                      <SelectItem value="gemini">Google Gemini REST</SelectItem>
+                      <SelectItem value="openai">OpenAI mini REST</SelectItem>
+                      <SelectItem value="openai_compatible">
+                        OpenAI-compatible (Ollama/OpenRouter)
+                      </SelectItem>
+                      <SelectItem value="template">
+                        Instant grammatical (0 tokens)
+                      </SelectItem>
+                      <SelectItem value="browser_cdp">
+                        Browser CDP turn #2
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Small model ID
+                  </label>
+                  <input
+                    type="text"
+                    value={form.metadata_model || ""}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, metadata_model: e.target.value }))
+                    }
+                    placeholder="gemini-2.0-flash / gpt-4o-mini"
+                    className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5]"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Vision payload
+                  </label>
+                  <Select
+                    value={form.metadata_vision_mode || "thumbnail_512"}
+                    onValueChange={(v) =>
+                      v &&
+                      setForm((f) => ({
+                        ...f,
+                        metadata_vision_mode: v as MetadataVisionMode,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="thumbnail_512">
+                        512px JPEG thumbnail (~35KB)
+                      </SelectItem>
+                      <SelectItem value="text_only">
+                        Text prompt only (0 image tokens)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    OpenAI-compatible base URL (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={form.metadata_api_base_url || ""}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        metadata_api_base_url: e.target.value,
+                      }))
+                    }
+                    placeholder="https://openrouter.ai/api/v1"
+                    className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5]"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-[#A3A3A3]">
+                    Metadata API key pool (optional, 1 per line)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={form.metadata_api_key || ""}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, metadata_api_key: e.target.value }))
+                    }
+                    placeholder="Leave blank to reuse Gemini/OpenAI keys below, or paste multiple keys for rotation…"
+                    className="rounded-md border border-[#2E2E2E] bg-[#262626] p-2 font-mono-tech text-[11px] text-[#F5F5F5]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-[#A3A3A3]">
+                  Default SEO caption prompt
+                </label>
+                <textarea
+                  rows={2}
+                  value={form.default_caption_prompt || ""}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      default_caption_prompt: e.target.value,
+                    }))
+                  }
+                  className="w-full rounded-md border border-[#2E2E2E] bg-[#262626] p-2.5 text-xs text-[#F5F5F5]"
+                />
+              </div>
+
+              <div className="rounded-md border border-[#2E2E2E] bg-[#171717] p-3.5 flex flex-col gap-3">
+                <div className="flex items-center gap-2 text-xs text-[#A3A3A3]">
+                  <ShieldCheck size={15} weight="fill" />
+                  <span>
+                    Stored locally in SQLite — never written to manifest.json, CSV, or logs.
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="flex items-center gap-1 text-xs font-medium text-[#A3A3A3]">
+                      <Key size={12} /> Gemini / Imagen key
+                    </label>
+                    <input
+                      type="password"
+                      value={form.gemini_api_key}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, gemini_api_key: e.target.value }))
+                      }
+                      placeholder="AIzaSy…"
+                      className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5]"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="flex items-center gap-1 text-xs font-medium text-[#A3A3A3]">
+                      <Key size={12} /> OpenAI key
+                    </label>
+                    <input
+                      type="password"
+                      value={form.openai_api_key}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, openai_api_key: e.target.value }))
+                      }
+                      placeholder="sk-…"
+                      className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5]"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="flex items-center gap-1 text-xs font-medium text-[#A3A3A3]">
+                      <Key size={12} /> Pinterest v5 token
+                    </label>
+                    <input
+                      type="password"
+                      value={form.pinterest_access_token}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          pinterest_access_token: e.target.value,
+                        }))
+                      }
+                      placeholder="pina_…"
+                      className="h-9 rounded-md border border-[#2E2E2E] bg-[#262626] px-3 font-mono-tech text-xs text-[#F5F5F5]"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* SECTION 4: Generation Guards & Workspace Maintenance */}
+          <div className="grid grid-cols-1 gap-6 p-5 sm:p-6 lg:grid-cols-12">
+            <div className="lg:col-span-4 space-y-1.5">
+              <h2 className="text-sm font-semibold text-[#F5F5F5]">
+                Generation guards &amp; workspace reset
+              </h2>
+              <p className="text-xs leading-relaxed text-[#A3A3A3]">
+                Control automatic Gemini watermark removal, isolated chat threads per shot, similarity checks, browser tab recycling, and clean workspace resets.
+              </p>
+            </div>
+
+            <div className="lg:col-span-8 flex flex-col gap-3">
+              <div className="divide-y divide-[#2E2E2E] rounded-md border border-[#2E2E2E] bg-[#171717] px-3.5">
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <div>
+                    <p className="text-xs font-medium text-[#F5F5F5]">
+                      Auto-remove Gemini watermark
+                    </p>
+                    <p className="text-[11px] text-[#737373]">
+                      Lossless reverse alpha blending + subpixel polish after each image
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.remove_watermark ?? true}
+                    onCheckedChange={(checked) =>
+                      setForm((f) => ({ ...f, remove_watermark: checked }))
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <div>
+                    <p className="text-xs font-medium text-[#F5F5F5]">
+                      Open fresh chat per shot
+                    </p>
+                    <p className="text-[11px] text-[#737373]">
+                      Starts an isolated chat thread for each shot so prior frames cannot bias composition
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.fresh_chat_per_turn ?? true}
+                    onCheckedChange={(checked) =>
+                      setForm((f) => ({ ...f, fresh_chat_per_turn: checked }))
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <div>
+                    <p className="text-xs font-medium text-[#F5F5F5]">
+                      Reference similarity guard &amp; auto re-roll
+                    </p>
+                    <p className="text-[11px] text-[#737373]">
+                      Rejects near-clones of reference inputs, rotates variation axes, and drops raw ref on final retry
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.reference_similarity_check ?? true}
+                    onCheckedChange={(checked) =>
+                      setForm((f) => ({
+                        ...f,
+                        reference_similarity_check: checked,
+                        drop_ref_on_similarity_retry: checked,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <span className="text-xs text-[#F5F5F5]">
+                    Max auto-retries per shot (network drop or clone rejection)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={4}
+                    value={form.max_turn_retries ?? 2}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        max_turn_retries: Math.max(
+                          0,
+                          Math.min(4, Number(e.target.value) || 0)
+                        ),
+                      }))
+                    }
+                    className="h-8 w-16 rounded border border-[#2E2E2E] bg-[#262626] text-center font-mono-tech text-xs text-[#F5F5F5]"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <div>
+                    <p className="text-xs font-medium text-[#F5F5F5]">
+                      Recycle Chrome tab interval (shots)
+                    </p>
+                    <p className="text-[11px] text-[#737373]">
+                      Opens a fresh browser tab every N shots to keep RAM flat on 100–1000 image sets
+                    </p>
+                  </div>
+                  <input
+                    type="number"
+                    min={5}
+                    max={100}
+                    value={form.cdp_recycle_tab_interval ?? 20}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        cdp_recycle_tab_interval: Math.max(
+                          5,
+                          Math.min(100, Number(e.target.value) || 20)
+                        ),
+                      }))
+                    }
+                    className="h-8 w-16 rounded border border-[#2E2E2E] bg-[#262626] text-center font-mono-tech text-xs text-[#F5F5F5]"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <span className="text-xs text-[#F5F5F5]">
+                    dHash near-duplicate warning threshold (0–16 bits)
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={16}
+                    value={form.dhash_warning_threshold}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        dhash_warning_threshold: Number(e.target.value) || 6,
+                      }))
+                    }
+                    className="h-8 w-16 rounded border border-[#2E2E2E] bg-[#262626] text-center font-mono-tech text-xs text-[#F5F5F5]"
+                  />
+                </div>
+              </div>
+
+              {/* Workspace Reset Box */}
+              <div className="rounded-md border border-[#2E2E2E] bg-[#171717] p-4 flex flex-col gap-2.5">
+                <p className="text-xs font-semibold text-[#F5F5F5]">
+                  Reset studio workspace history
+                </p>
+                <div className="flex items-center justify-between text-xs text-[#A3A3A3]">
+                  <span>Also delete uploaded reference images</span>
+                  <Switch checked={clearRefs} onCheckedChange={setClearRefs} />
+                </div>
+                <div className="flex items-center justify-between text-xs text-[#A3A3A3]">
+                  <span>Also delete exported folders inside ./exports/</span>
+                  <Switch
+                    checked={deleteExports}
+                    onCheckedChange={setDeleteExports}
+                  />
+                </div>
+                <div className="pt-1">
+                  <StudioButton
+                    variant="danger"
+                    loading={resetting}
+                    onClick={handleReset}
+                    icon={<Trash size={14} />}
+                  >
+                    Reset studio workspace
+                  </StudioButton>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+      </StudioPanel>
+
+      {/* Bottom Save Button */}
+      <div className="flex justify-end">
+        <StudioButton
+          variant="primary"
+          loading={saving}
+          onClick={handleSave}
+          icon={<FloppyDisk size={15} />}
+        >
+          {saving ? "Saving…" : "Save settings"}
+        </StudioButton>
       </div>
     </div>
   )
