@@ -9,7 +9,12 @@ import re
 import unicodedata
 from typing import Any, Dict, List, Optional
 
-from config import DEFAULT_CAPTION_PROMPT, format_picassy_keyword
+from config import (
+    DEFAULT_CAPTION_PROMPT,
+    format_picassy_keyword,
+    format_picassy_keyword_prose,
+    format_picassy_sentence_case,
+)
 
 
 def _slugify_plain(text: str, max_len: int = 42) -> str:
@@ -35,6 +40,7 @@ def build_metadata_prompt(
     include_visual_context: bool = True,
 ) -> str:
     keyword = format_picassy_keyword(primary_tag or theme) or (primary_tag or theme).strip()
+    kw_prose = format_picassy_keyword_prose(keyword) or keyword.lower()
     custom_instruction = (caption_prompt or DEFAULT_CAPTION_PROMPT).strip()
     context_note = f" Visual context: {prompt_final}." if (include_visual_context and prompt_final) else ""
     cat_line = ""
@@ -44,19 +50,19 @@ def build_metadata_prompt(
 
     return (
         f"Write natural, grammatically sound SEO image metadata in {metadata_language} for the attached/generated image. "
-        f'Core primary keyword (Tag chinh — keep EXACT spelling & spacing): "{keyword}". '
+        f'Core primary keyword: "{keyword}" (use "{kw_prose}" inside sentences). '
         f"{custom_instruction}{context_note} "
         "STRICT RULES (never keyword-stuff; prioritize natural grammar):\n"
-        f'1. "title": MAX 60 characters total. MUST start directly with exact keyword "{keyword}". Complete meaningful phrase or sentence.\n'
-        f'2. "description": MAX 160 characters total. Complete, engaging sentence(s) providing visual context that naturally includes exact "{keyword}". NO hashtags (#).\n'
-        f'3. "alt_text": STRICTLY 100 to 125 characters (count carefully!). Screen-reader & SEO narrative faithfully describing what is actually visible in the image, naturally containing exact "{keyword}". Correct grammar, no robotic keyword list, no hashtags.\n'
+        f'1. "title": MAX 60 characters total. MUST start directly with exact Title-Case keyword "{keyword}". Complete meaningful phrase or sentence.\n'
+        f'2. "description": MAX 160 characters total. Sentence case ONLY (capitalize ONLY the first letter of each sentence — do NOT Title-Case "{kw_prose}" mid-sentence). Complete, engaging sentence(s) naturally including "{kw_prose}". NO hashtags (#).\n'
+        f'3. "alt_text": STRICTLY 100 to 125 characters (count carefully!). Sentence case ONLY (capitalize ONLY the first letter of the sentence — do NOT Title-Case "{kw_prose}" mid-sentence). Screen-reader & SEO narrative faithfully describing what is visible, naturally containing "{kw_prose}". No hashtags.\n'
         "IMPORTANT: Reply with text ONLY (do NOT generate or edit any image) as a single JSON object:\n"
         "```json\n"
         "{\n"
         f'  "title": "{keyword} ...",\n'
-        f'  "description": "Natural 1-2 sentence visual description including {keyword} (<=160 chars, no #tags).",\n'
+        f'  "description": "Sentence-case 1-2 sentence visual description including {kw_prose} (<=160 chars, no #tags).",\n'
         f'{cat_line}'
-        f'  "alt_text": "Faithful 100-125 character visual description naturally including {keyword}."\n'
+        f'  "alt_text": "Sentence-case 100-125 character visual description naturally including {kw_prose}."\n'
         "}\n"
         "```"
     )
@@ -72,9 +78,10 @@ def build_picassy_repair_prompt(
     issues: List[str],
 ) -> str:
     clean_pt = format_picassy_keyword(primary_tag) or primary_tag.strip()
+    prose_pt = format_picassy_keyword_prose(clean_pt) or clean_pt.lower()
     return (
         f"Fix the metadata JSON below strictly in {metadata_language} while keeping natural human grammar and zero keyword stuffing.\n"
-        f'Exact required keyword: "{clean_pt}"\n'
+        f'Primary keyword: "{clean_pt}" (in sentences write as "{prose_pt}")\n'
         f"Current draft:\n"
         f'- title ({len(title)} chars): "{title}"\n'
         f'- description ({len(description)} chars): "{description}"\n'
@@ -82,8 +89,8 @@ def build_picassy_repair_prompt(
         f"Issues to fix: {'; '.join(issues)}\n"
         "Rules:\n"
         f'- title: <= 60 chars, MUST start with exact "{clean_pt}" (Title Case, no hyphens/underscores).\n'
-        f'- description: <= 160 chars, complete sentence containing exact "{clean_pt}", no hashtags.\n'
-        f'- alt_text: STRICTLY 100 to 125 characters inclusive, natural visual narrative containing exact "{clean_pt}", no hashtags.\n'
+        f'- description: <= 160 chars, Sentence case ONLY (only first letter of sentence capitalized), complete sentence containing "{prose_pt}", no hashtags.\n'
+        f'- alt_text: STRICTLY 100 to 125 characters inclusive, Sentence case ONLY (only first letter of sentence capitalized), natural visual narrative containing "{prose_pt}", no hashtags.\n'
         "Reply ONLY with valid JSON containing keys title, description, alt_text."
     )
 
@@ -186,19 +193,20 @@ def fit_picassy_metadata(
     """
     raw_kw_source = (primary_tag or theme or "Artwork").strip()
     kw = format_picassy_keyword(raw_kw_source) or "Artwork"
+    kw_prose = format_picassy_keyword_prose(raw_kw_source) or kw.lower()
     lang_low = (metadata_language or "English").strip().lower()
     is_vi = lang_low in ("vietnamese", "tiếng việt", "vi")
     hints = visual_hints or {}
 
-    def _scrub_slug_variants(s: str) -> str:
+    def _scrub_slug_variants(s: str, replacement: str) -> str:
         out_s = s
         for cand_raw in {raw_kw_source, (theme or "").strip()}:
-            if cand_raw and ("-" in cand_raw or "_" in cand_raw) and cand_raw.lower() != kw.lower():
-                out_s = re.sub(re.escape(cand_raw), kw, out_s, flags=re.IGNORECASE)
+            if cand_raw and ("-" in cand_raw or "_" in cand_raw) and cand_raw.lower() != replacement.lower():
+                out_s = re.sub(re.escape(cand_raw), replacement, out_s, flags=re.IGNORECASE)
         return out_s
 
     # 1. Title (<= 60 chars, MUST start with exact Title-Cased `kw` without hyphens/underscores)
-    raw_title = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("title") or "")).strip(' "\''))
+    raw_title = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("title") or "")).strip(' "\''), kw)
     raw_title = _ensure_keyword_casing(raw_title, kw)
     if not raw_title or not raw_title.lower().startswith(kw.lower()):
         tail = re.sub(re.escape(kw), "", raw_title, flags=re.IGNORECASE).strip(" :-–—|.,")
@@ -216,46 +224,44 @@ def fit_picassy_metadata(
         if not title.lower().startswith(kw.lower()):
             title = kw[:60]
 
-    # 2. Description (<= 160 chars, natural sentence(s) containing exact primary_tag, zero hashtags)
-    raw_desc = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("description") or "")).strip(' "\''))
-    raw_desc = _ensure_keyword_casing(raw_desc, kw)
+    # 2. Description (<= 160 chars, Sentence case ONLY, natural sentence(s) containing keyword, zero hashtags)
+    raw_desc = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("description") or "")).strip(' "\''), kw_prose)
     if not raw_desc:
         angle_h = hints.get("camera_angle") or ("góc nhìn tự nhiên" if is_vi else "balanced framing")
         light_h = hints.get("lighting") or ("ánh sáng hài hòa" if is_vi else "soft natural light")
         raw_desc = (
-            f"Hình ảnh {kw} được thể hiện tự nhiên với {angle_h.lower()} và {light_h.lower()}."
+            f"Hình ảnh {kw_prose} được thể hiện tự nhiên với {angle_h.lower()} và {light_h.lower()}."
             if is_vi
-            else f"A captivating {kw} composition shaped with {angle_h.lower()} and {light_h.lower()}."
+            else f"A captivating {kw_prose} composition shaped with {angle_h.lower()} and {light_h.lower()}."
         )
-    elif kw.lower() not in raw_desc.lower():
-        prefix_lead = f"Khám phá {kw}: " if is_vi else f"Featuring {kw}, "
-        body_clean = raw_desc[0].lower() + raw_desc[1:] if (not is_vi and len(raw_desc) > 1 and raw_desc[:2].istitle()) else raw_desc
-        raw_desc = f"{prefix_lead}{body_clean}"
+    elif kw_prose.lower() not in raw_desc.lower():
+        prefix_lead = f"Khám phá {kw_prose}: " if is_vi else f"Featuring {kw_prose}, "
+        raw_desc = f"{prefix_lead}{raw_desc}"
     desc = _trim_grammatical_phrase(raw_desc, 160, keep_terminal_punct=True)
-    if kw.lower() not in desc.lower():
+    if kw_prose.lower() not in desc.lower():
         desc = _trim_grammatical_phrase(
-            f"{kw} portrayed with refined visual balance and authentic atmosphere.",
+            f"{kw_prose} portrayed with refined visual balance and authentic atmosphere.",
             160,
             keep_terminal_punct=True,
         )
+    desc = format_picassy_sentence_case(desc)
 
-    # 3. Alt text (STRICTLY 100..125 chars, natural narrative describing real image, contains exact primary_tag)
-    raw_alt = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("alt_text") or "")).strip(' "\''))
-    raw_alt = _ensure_keyword_casing(raw_alt, kw)
+    # 3. Alt text (STRICTLY 100..125 chars, Sentence case ONLY, natural narrative describing real image)
+    raw_alt = _scrub_slug_variants(_strip_hashtags(str(raw_meta.get("alt_text") or "")).strip(' "\''), kw_prose)
     if not raw_alt:
         angle_h = hints.get("camera_angle") or ("góc nhìn cân đối" if is_vi else "clear balanced framing")
         light_h = hints.get("lighting") or ("ánh sáng tự nhiên ấm áp" if is_vi else "soft natural light")
         atmos_h = hints.get("atmosphere") or ("bối cảnh hài hòa giàu chi tiết" if is_vi else "a calm, detailed setting")
         raw_alt = (
-            f"Bức ảnh ghi lại {kw} ở {angle_h.lower()}, nổi bật dưới {light_h.lower()} giữa {atmos_h.lower()}."
+            f"Bức ảnh ghi lại {kw_prose} ở {angle_h.lower()}, nổi bật dưới {light_h.lower()} giữa {atmos_h.lower()}."
             if is_vi
-            else f"View of {kw} captured with {angle_h.lower()}, illuminated by {light_h.lower()} in {atmos_h.lower()}."
+            else f"View of {kw_prose} captured with {angle_h.lower()}, illuminated by {light_h.lower()} in {atmos_h.lower()}."
         )
-    elif kw.lower() not in raw_alt.lower():
+    elif kw_prose.lower() not in raw_alt.lower():
         raw_alt = (
-            f"Hình ảnh {kw}: {raw_alt}"
+            f"Hình ảnh {kw_prose}: {raw_alt}"
             if is_vi
-            else f"{kw} shown as {raw_alt[0].lower() + raw_alt[1:] if len(raw_alt) > 1 else raw_alt}"
+            else f"{kw_prose} shown as {raw_alt}"
         )
 
     alt = _trim_grammatical_phrase(raw_alt, 125, keep_terminal_punct=True)
@@ -298,6 +304,8 @@ def fit_picassy_metadata(
         base_no_dot = alt.rstrip(".!? ")
         cand = f"{base_no_dot} {pad_phrase}."
         alt = cand if len(cand) <= 125 else _trim_grammatical_phrase(cand, 125, keep_terminal_punct=True)
+
+    alt = format_picassy_sentence_case(alt)
 
     # Exact category validation
     resolved_cat = (category or "").strip()

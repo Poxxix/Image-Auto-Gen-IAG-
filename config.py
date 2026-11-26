@@ -271,6 +271,77 @@ def format_picassy_keyword(raw_text: Optional[str]) -> str:
     return " ".join(out_words)
 
 
+def format_picassy_keyword_prose(raw_text: Optional[str]) -> str:
+    """
+    Normalizes any raw keyword, theme, or image filename into natural lowercase prose words
+    without hyphens/underscores (preserving true acronyms like AI, 3D, 4K, Y2K), suitable
+    for mid-sentence use inside `description` and `alt_text`.
+    e.g. 'beautiful-image-1.png' -> 'beautiful image', 'Accent Nails Designs' -> 'accent nails designs',
+    'ai-prompts' -> 'AI prompts'.
+    """
+    titled = format_picassy_keyword(raw_text)
+    if not titled:
+        return ""
+    out_words: List[str] = []
+    for word in titled.split(" "):
+        if not word:
+            continue
+        low = word.lower()
+        if low in _UPPER_ACRONYMS:
+            out_words.append(low.upper())
+        else:
+            out_words.append(low)
+    return " ".join(out_words)
+
+
+def format_picassy_sentence_case(raw_text: Optional[str]) -> str:
+    """
+    Converts prose (`description`, `alt_text`) into clean Sentence case:
+    only the first word of each sentence (at string start or after `.`, `!`, `?`) has its
+    first letter capitalized; all remaining words (including Title-Cased keywords) become
+    natural lowercase while preserving true uppercase acronyms (`AI`, `3D`, `4K`, `Y2K`, etc.).
+    """
+    s = " ".join(str(raw_text or "").split())
+    if not s:
+        return ""
+
+    tokens = s.split(" ")
+    out_tokens: List[str] = []
+    sentence_start = True
+
+    for tok in tokens:
+        if not tok:
+            continue
+        subparts = tok.split("-")
+        rebuilt_subs: List[str] = []
+        for idx, sub in enumerate(subparts):
+            m = re.match(r"^([^\w]*)([\w]+)([^\w]*)$", sub, flags=re.UNICODE)
+            if not m:
+                rebuilt_subs.append(sub)
+                continue
+            lead, core, trail = m.group(1), m.group(2), m.group(3)
+            low = core.lower()
+            if low in _UPPER_ACRONYMS:
+                formatted_core = low.upper()
+                if idx == 0:
+                    sentence_start = False
+            elif sentence_start and idx == 0:
+                formatted_core = low[0].upper() + low[1:] if low[0].isalpha() else low
+                sentence_start = False
+            else:
+                formatted_core = low
+            rebuilt_subs.append(f"{lead}{formatted_core}{trail}")
+
+        rebuilt_tok = "-".join(rebuilt_subs)
+        out_tokens.append(rebuilt_tok)
+
+        stripped_end = rebuilt_tok.rstrip("\"'”’)]}")
+        if stripped_end.endswith((".", "!", "?")):
+            sentence_start = True
+
+    return " ".join(out_tokens)
+
+
 # Supported Post-Image Metadata Export Modes (Picassy CSV Only or Image Only)
 # - "csv": Generate Picassy Title, Description & Alt Text -> export single `pin-import.csv` alongside images
 # - "none": Skip post-image metadata and export images only (maximum speed)

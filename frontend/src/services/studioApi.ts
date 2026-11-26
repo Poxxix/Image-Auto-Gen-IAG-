@@ -31,6 +31,42 @@ export function formatPicassyKeyword(rawText?: string | null): string {
     })
     .join(" ")
 }
+
+export function formatPicassySentenceCase(rawText?: string | null): string {
+  const s = (rawText || "").replace(/\s+/g, " ").trim()
+  if (!s) return ""
+  let sentenceStart = true
+  return s
+    .split(" ")
+    .filter(Boolean)
+    .map((tok) => {
+      const rebuilt = tok
+        .split("-")
+        .map((sub, idx) => {
+          const m = sub.match(/^([^\p{L}\p{N}]*)([\p{L}\p{N}]+)([^\p{L}\p{N}]*)$/u)
+          if (!m) return sub
+          const [, lead, core, trail] = m
+          const low = core.toLowerCase()
+          let formatted = low
+          if (UPPER_ACRONYMS.has(low)) {
+            formatted = low.toUpperCase()
+            if (idx === 0) sentenceStart = false
+          } else if (sentenceStart && idx === 0) {
+            formatted = /^\p{L}/u.test(low) ? low.charAt(0).toUpperCase() + low.slice(1) : low
+            sentenceStart = false
+          }
+          return `${lead}${formatted}${trail}`
+        })
+        .join("-")
+
+      const strippedEnd = rebuilt.replace(/["'”’)\]}]+$/u, "")
+      if (/[.!?]$/.test(strippedEnd)) {
+        sentenceStart = true
+      }
+      return rebuilt
+    })
+    .join(" ")
+}
 export type ExportImageFormat = "original" | "png" | "jpg" | "webp"
 export type FilenameStyle = "picassy_slug" | "studio_seq"
 export type MetadataProviderType =

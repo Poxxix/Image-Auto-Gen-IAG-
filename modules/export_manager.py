@@ -15,6 +15,8 @@ from PIL import Image
 
 from config import (
     format_picassy_keyword,
+    format_picassy_keyword_prose,
+    format_picassy_sentence_case,
     normalize_export_image_format,
     normalize_filename_style,
     normalize_metadata_export_mode,
@@ -90,12 +92,13 @@ def _sanitize_single_line(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-def _clean_slug_tokens_in_copy(text: str, raw_theme: str, clean_tag: str) -> str:
-    s = _sanitize_single_line(text)
-    if not s or not clean_tag:
+def _clean_slug_tokens_in_copy(text: str, raw_theme: str, replacement: str) -> str:
+    s = re.sub(r"(?:^|\s)#[^\s#]+", " ", str(text or ""))
+    s = _sanitize_single_line(s)
+    if not s or not replacement:
         return s
-    if raw_theme and ("-" in raw_theme or "_" in raw_theme) and raw_theme.lower() != clean_tag.lower():
-        s = re.sub(re.escape(raw_theme), clean_tag, s, flags=re.IGNORECASE)
+    if raw_theme and ("-" in raw_theme or "_" in raw_theme) and raw_theme.lower() != replacement.lower():
+        s = re.sub(re.escape(raw_theme), replacement, s, flags=re.IGNORECASE)
     return s
 
 
@@ -208,6 +211,7 @@ def build_generation_csv_row(job: Dict[str, Any], generation: Dict[str, Any]) ->
     raw_theme = str(job.get("theme") or "").strip()
     raw_tag_src = str(job.get("primary_tag") or raw_theme or generation.get("image_file") or "").strip()
     clean_tag = format_picassy_keyword(raw_tag_src) or raw_tag_src
+    prose_tag = format_picassy_keyword_prose(raw_tag_src) or clean_tag.lower()
 
     image_file = _sanitize_single_line(generation.get("image_file"))
     raw_title = _clean_slug_tokens_in_copy(generation.get("title") or "", raw_theme, clean_tag)
@@ -217,11 +221,15 @@ def build_generation_csv_row(job: Dict[str, Any], generation: Dict[str, Any]) ->
         tail = re.sub(re.escape(clean_tag), "", raw_title, flags=re.IGNORECASE).strip(" :-–—|.,")
         raw_title = f"{clean_tag} {tail}".strip()[:60] if tail else clean_tag[:60]
     else:
-        # Ensure exact Title-Case prefix
+        # Ensure exact Title-Case prefix on title
         raw_title = f"{clean_tag}{raw_title[len(clean_tag):]}"[:60].strip()
 
-    desc = _clean_slug_tokens_in_copy(generation.get("description") or "", raw_theme, clean_tag)[:160].strip()
-    alt_text = _clean_slug_tokens_in_copy(generation.get("alt_text") or "", raw_theme, clean_tag)[:125].strip()
+    desc = format_picassy_sentence_case(
+        _clean_slug_tokens_in_copy(generation.get("description") or "", raw_theme, prose_tag)[:160].strip()
+    )
+    alt_text = format_picassy_sentence_case(
+        _clean_slug_tokens_in_copy(generation.get("alt_text") or "", raw_theme, prose_tag)[:125].strip()
+    )
     category = _sanitize_single_line(job.get("category"))
     peak_flag = "TRUE" if bool(generation.get("is_peak")) else "FALSE"
     prompt_val = _sanitize_single_line(generation.get("prompt_final"))

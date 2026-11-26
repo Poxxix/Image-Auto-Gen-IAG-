@@ -12,6 +12,7 @@ from config import (
     DEFAULT_CAPTION_PROMPT,
     DEFAULT_PICASSY_CATEGORIES,
     format_picassy_keyword,
+    format_picassy_keyword_prose,
     split_api_keys,
 )
 from database.db_manager import db
@@ -377,15 +378,27 @@ def _synthesize_structured_metadata(
 
     raw_kw = (primary_tag or theme or "Artwork").strip()
     kw = format_picassy_keyword(raw_kw) or raw_kw
+    kw_prose = format_picassy_keyword_prose(raw_kw) or kw.lower()
     angle = str(variation_axes.get("camera_angle") or "editorial close-up perspective").strip().rstrip(".")
     lighting = str(variation_axes.get("lighting") or "soft natural daylight").strip().rstrip(".")
     comp = str(variation_axes.get("composition") or "balanced hero framing").strip().rstrip(".")
     atmos = str(variation_axes.get("atmosphere") or "clean studio backdrop").strip().rstrip(".")
 
-    angle_short = angle.split("(")[0].strip().lower()
-    lighting_short = lighting.split("(")[0].strip().lower()
-    comp_short = comp.split("(")[0].strip().lower()
-    atmos_short = atmos.split("(")[0].strip().lower()
+    import re as _re
+
+    def _clean_axis_noun(raw_axis: str) -> str:
+        s_ax = raw_axis.split("(")[0].split(",")[0].strip().lower()
+        s_ax = _re.sub(
+            r"^(?:shoot\s+from\s+|capture\s+from\s+|captured\s+from\s+|frame\s+|let\s+|show\s+|create\s+|use\s+)",
+            "",
+            s_ax,
+        ).strip()
+        return s_ax or "balanced framing"
+
+    angle_short = _clean_axis_noun(angle)
+    lighting_short = _clean_axis_noun(lighting)
+    comp_short = _clean_axis_noun(comp)
+    atmos_short = _clean_axis_noun(atmos)
 
     lang = (metadata_language or "English").strip().lower()
     idx_zero = max(0, index_num - 1)
@@ -393,14 +406,14 @@ def _synthesize_structured_metadata(
     if lang in ("vietnamese", "tiếng việt", "vi"):
         title_raw = f"{kw} {_VI_TITLE_SUFFIXES[idx_zero % len(_VI_TITLE_SUFFIXES)]}"
         desc_raw = _VI_DESC_TEMPLATES[idx_zero % len(_VI_DESC_TEMPLATES)].format(
-            kw=kw,
+            kw=kw_prose,
             angle=angle_short,
             lighting=lighting_short,
             comp=comp_short,
             atmos=atmos_short,
         )
         alt_raw = _VI_ALT_TEMPLATES[idx_zero % len(_VI_ALT_TEMPLATES)].format(
-            kw=kw,
+            kw=kw_prose,
             angle=angle_short,
             lighting=lighting_short,
             comp=comp_short,
@@ -409,14 +422,14 @@ def _synthesize_structured_metadata(
     else:
         title_raw = f"{kw} {_EN_TITLE_SUFFIXES[idx_zero % len(_EN_TITLE_SUFFIXES)]}"
         desc_raw = _EN_DESC_TEMPLATES[idx_zero % len(_EN_DESC_TEMPLATES)].format(
-            kw=kw,
+            kw=kw_prose,
             angle=angle_short,
             lighting=lighting_short,
             comp=comp_short,
             atmos=atmos_short,
         )
         alt_raw = _EN_ALT_TEMPLATES[idx_zero % len(_EN_ALT_TEMPLATES)].format(
-            kw=kw,
+            kw=kw_prose,
             angle=angle_short,
             lighting=lighting_short,
             comp=comp_short,

@@ -232,12 +232,20 @@ def test_module_4() -> None:
         assert len(rows) == 3, f"Expected header + 2 rows, got {len(rows)}"
         assert rows[1][0] == "beautiful-girl-with-bikini-1.png"
         assert rows[1][1].startswith("Beautiful Girl With Bikini")
+        assert rows[1][2][0].isupper() and "Beautiful Girl With Bikini" not in rows[1][2][1:], (
+            f"description must use Sentence case, got: {rows[1][2]}"
+        )
+        assert "beautiful girl with bikini" in rows[1][2].lower()
+        assert rows[1][3][0].isupper() and "Beautiful Girl With Bikini" not in rows[1][3][1:], (
+            f"alt_text must use Sentence case, got: {rows[1][3]}"
+        )
+        assert "beautiful girl with bikini" in rows[1][3].lower()
         assert rows[1][4] == "Photography Topics"
         assert rows[1][5] == "Beautiful Girl With Bikini"
         assert rows[1][6] == "TRUE"
         assert "Coastal sunset portrait #1" in rows[1][7]
         assert rows[2][6] == "FALSE"
-        print("[PASS] Picassy slug naming & 8-column `pin-import.csv` (Title Case + Peak + Prompt) verified.")
+        print("[PASS] Picassy slug naming & 8-column `pin-import.csv` (Title Case title/tags + Sentence case desc/alt + Peak + Prompt) verified.")
 
         # 2. Switch to 'none' mode and verify pure image-only directory (no .csv/.json/.txt)
         job = db.update_job(job_id, metadata_export_mode="none")

@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog"
 import {
   formatPicassyKeyword,
+  formatPicassySentenceCase,
   getGenerationImageUrl,
   getJobCsvUrl,
   getJobZipUrl,
@@ -300,11 +301,13 @@ export function GalleryScreen({
   }
 
   const buildCsvRowPreview = (gen: GenerationItem, withHeader = true) => {
+    const rawDesc = descDrafts[gen.id] ?? gen.description ?? ""
+    const rawAlt = altDrafts[gen.id] ?? gen.alt_text ?? ""
     const row = [
       gen.image_file || "",
       titleDrafts[gen.id] ?? gen.title ?? "",
-      descDrafts[gen.id] ?? gen.description ?? "",
-      altDrafts[gen.id] ?? gen.alt_text ?? "",
+      formatPicassySentenceCase(rawDesc),
+      formatPicassySentenceCase(rawAlt),
       jobCategory,
       jobPrimaryTag,
       gen.is_peak ? "TRUE" : "FALSE",
