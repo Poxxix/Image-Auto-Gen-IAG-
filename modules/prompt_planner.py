@@ -9,8 +9,11 @@ import requests
 from config import (
     AI_ENGINES,
     CDP_ENDPOINT,
+    DEFAULT_REFERENCE_PROFILES,
     PROVIDER_MODELS,
     STUDIO_PRESETS,
+    get_effective_reference_profiles,
+    normalize_carrier_override,
     normalize_reference_strength,
 )
 from database.db_manager import db
@@ -164,11 +167,22 @@ def normalize_enabled_fixed(raw_fixed: Optional[Dict[str, Any]] = None) -> Dict[
 TupleAxesFixed = tuple[Dict[str, Any], Dict[str, Any]]
 
 
+def _load_active_ref_profile(reference_strength: str = "balanced") -> Dict[str, Any]:
+    mode = normalize_reference_strength(reference_strength, default="balanced")
+    try:
+        settings = db.get_settings(include_secrets=False)
+        profiles = get_effective_reference_profiles(settings.get("reference_mode_profiles"))
+        return profiles.get(mode) or DEFAULT_REFERENCE_PROFILES["balanced"]
+    except Exception:
+        return DEFAULT_REFERENCE_PROFILES.get(mode) or DEFAULT_REFERENCE_PROFILES["balanced"]
+
+
 def resolve_axes_and_fixed(
     preset_id: str = "",
     fixed_elements: Optional[Dict[str, Any]] = None,
     variation_axes: Optional[Dict[str, Any]] = None,
     reference_mode: str = "prompt_only",
+    reference_strength: str = "balanced",
 ) -> TupleAxesFixed:
     norm_preset_id = (preset_id or "").strip()
     is_ref_adaptive = norm_preset_id == REFERENCE_ADAPTIVE_PRESET_ID or (
@@ -176,6 +190,7 @@ def resolve_axes_and_fixed(
     )
 
     if is_ref_adaptive:
+        prof = _load_active_ref_profile(reference_strength)
         base_fixed: Dict[str, Any] = {
             "subject": "",
             "style": "",
@@ -216,11 +231,11 @@ def resolve_axes_and_fixed(
         )
         custom_pool = _clean_list(
             raw_axes.get("custom_axis"),
-            REFERENCE_SAFE_MOTIF_VARIATIONS,
+            prof.get("custom_axis") or REFERENCE_SAFE_MOTIF_VARIATIONS,
         )
         custom_label = (
             str(raw_axes.get("custom_axis_label") or "").strip()
-            or "Motif redesign"
+            or str(prof.get("custom_axis_label") or "Motif redesign")
         )
         resolved_axes: Dict[str, Any] = {
             "camera_angles": _clean_list(
@@ -229,11 +244,11 @@ def resolve_axes_and_fixed(
             ),
             "lighting": _clean_list(
                 raw_axes.get("lighting"),
-                REFERENCE_SAFE_TONAL_LIGHTING,
+                prof.get("lighting") or REFERENCE_SAFE_TONAL_LIGHTING,
             ),
             "compositions": _clean_list(
                 raw_axes.get("compositions"),
-                REFERENCE_SAFE_COMPOSITIONS,
+                prof.get("compositions") or REFERENCE_SAFE_COMPOSITIONS,
             ),
             "atmospheres": _clean_list(
                 raw_axes.get("atmospheres"),
@@ -413,6 +428,34 @@ def _compact_prompt_clause(
     return clipped
 
 
+def _build_carrier_clause(ref_mode: str, carrier_override: str) -> str:
+    co = normalize_carrier_override(carrier_override, default="auto")
+    if co == "flat_2d":
+        return (
+            "render strictly as a clean flat 2D illustration/flash sheet on plain paper or artboard "
+            "(never place on human skin, body parts, or 3D room scenes, even if the reference is a real photo)"
+        )
+    if co == "in_situ":
+        return (
+            "render naturally applied in real life / on real human skin, nails, or physical object in-situ "
+            "(never flatten into a 2D paper sheet, even if the reference is a flat drawing)"
+        )
+    if ref_mode == "subject_keep":
+        return "its exact surface carrier (flat 2D sheet stays flat on paper; on-skin or real photo stays on-skin/in-situ)"
+    if ref_mode == "balanced":
+        return (
+            "exact surface carrier (if flat 2D flash/art, keep flat on paper—never place on skin/3D; "
+            "if on skin/nails/object, keep on-skin/in-situ—never flatten to paper)"
+        )
+    if ref_mode == "fashion_vibe":
+        return "matching camera framing (mirror/flash candid stays candid; studio lookbook stays editorial)"
+    if ref_mode == "character_lock":
+        return "preserving subject fidelity and realistic material rendering"
+    if ref_mode == "layout_map":
+        return "matching the reference's framing plane (flat graphic stays 2D; depth photo stays 3D)"
+    return "freely staging a fresh scene medium"
+
+
 def compose_prompt_from_axes(
     theme: str,
     base_prompt: str,
@@ -422,6 +465,7 @@ def compose_prompt_from_axes(
     has_reference: bool = False,
     reference_reused: bool = False,
     reference_strength: str = "balanced",
+    carrier_override: str = "auto",
     variation_number: int = 1,
     strong_variation: bool = False,
     enabled_axes: Optional[Dict[str, bool]] = None,
@@ -477,17 +521,16 @@ def compose_prompt_from_axes(
     segments: List[str] = []
 
     if has_reference:
+        prof = _load_active_ref_profile(ref_mode)
+        co = normalize_carrier_override(carrier_override, default="auto")
+        carrier_clause = _build_carrier_clause(ref_mode, co)
+        tmpl = str(prof.get("instruction_template") or "").strip()
+
         if ref_mode == "subject_keep":
             extra_distinct = (
                 " Change pose, spacing, and secondary details noticeably on the same surface."
                 if (reference_reused or strong_variation)
                 else ""
-            )
-            segments.append(
-                f"Create a close \"{clean_theme}\" variation of the attached reference image: "
-                "lock its exact surface carrier (flat 2D sheet stays flat on paper; "
-                "on-skin or real photo stays on-skin/in-situ), preserving medium, palette, "
-                f"and core subject motif while varying layout and secondary details.{extra_distinct}"
             )
         elif ref_mode == "style_only":
             extra_distinct = (
@@ -495,23 +538,45 @@ def compose_prompt_from_axes(
                 if (reference_reused or strong_variation)
                 else ""
             )
-            segments.append(
-                f"Create a brand-new \"{clean_theme}\" visual borrowing ONLY the artistic medium, "
-                "surface texture, lighting mood, and color palette from the attached reference image, "
-                f"freely staging a fresh subject arrangement and setting.{extra_distinct}"
+        elif ref_mode == "fashion_vibe":
+            extra_distinct = (
+                " Use a distinctly different pose, garment cut, and background angle from prior shots."
+                if (reference_reused or strong_variation)
+                else ""
+            )
+        elif ref_mode == "character_lock":
+            extra_distinct = (
+                " Stage a noticeably different camera angle, action, and setting while keeping identity."
+                if (reference_reused or strong_variation)
+                else ""
+            )
+        elif ref_mode == "layout_map":
+            extra_distinct = (
+                " Ensure the new focal subject silhouette differs clearly from the input reference."
+                if (reference_reused or strong_variation)
+                else ""
             )
         else:
-            # "balanced" (Default): 100% Style + Carrier lock, fresh motif/design inside that carrier
             extra_distinct = (
                 " Redesign the primary motif shape, element count, and internal geometry substantially so it never copies the input 1:1."
                 if (reference_reused or strong_variation)
                 else ""
             )
+
+        if tmpl:
+            rendered_lead = (
+                tmpl.replace("{theme}", clean_theme)
+                .replace("{carrier_clause}", carrier_clause)
+                .strip()
+            )
+            if "{theme}" not in tmpl and clean_theme.lower() not in rendered_lead.lower():
+                rendered_lead = f'Theme "{clean_theme}": {rendered_lead}'
+            if co != "auto" and "{carrier_clause}" not in tmpl:
+                rendered_lead = f"{rendered_lead.rstrip('.')} ({carrier_clause})."
+            segments.append(f"{rendered_lead.rstrip('.')}.{extra_distinct}")
+        else:
             segments.append(
-                f"Create a new \"{clean_theme}\" design matching 100% of the attached reference's Style DNA "
-                "and exact surface carrier (if flat 2D flash/art, keep flat on paper—never place on skin/3D; "
-                "if on skin/nails/object, keep on-skin/in-situ—never flatten to paper), "
-                f"inventing a fresh motif structure, linework flow, and arrangement.{extra_distinct}"
+                f'Create a new "{clean_theme}" design matching the attached reference Style DNA and {carrier_clause}.{extra_distinct}'
             )
 
         if axis_parts:
@@ -585,6 +650,7 @@ def plan_job_variations(
     model: str = "chrome-cdp/gemini",
     reference_mode: str = "prompt_only",
     reference_strength: str = "balanced",
+    carrier_override: str = "auto",
     reference_ids: Optional[List[int]] = None,
     cycle_references: bool = True,
     preset_id: str = "",
@@ -613,6 +679,7 @@ def plan_job_variations(
         fixed_elements=fixed_elements,
         variation_axes=variation_axes,
         reference_mode=reference_mode,
+        reference_strength=reference_strength,
     )
 
     enabled_axes = resolved_axes.get("enabled_axes") or dict(DEFAULT_ENABLED_AXES)
@@ -695,6 +762,7 @@ def plan_job_variations(
                 has_reference=(ref_id is not None),
                 reference_reused=ref_reused,
                 reference_strength=reference_strength,
+                carrier_override=carrier_override,
                 variation_number=idx,
                 enabled_axes=enabled_axes,
                 custom_axis_label=custom_label,
@@ -736,6 +804,7 @@ def mutate_generation_variation(
         fixed_elements=job.get("fixed_elements"),
         variation_axes=job.get("variation_axes"),
         reference_mode=job.get("reference_mode") or "prompt_only",
+        reference_strength=str(job.get("reference_strength") or "balanced"),
     )
     enabled_axes = resolved_axes.get("enabled_axes") or dict(DEFAULT_ENABLED_AXES)
     angles = resolved_axes["camera_angles"]
@@ -776,6 +845,7 @@ def mutate_generation_variation(
             has_reference=bool(ref_id),
             reference_reused=True,
             reference_strength=str(job.get("reference_strength") or "balanced"),
+            carrier_override=str(job.get("carrier_override") or "auto"),
             variation_number=idx,
             strong_variation=True,
             enabled_axes=enabled_axes,

@@ -13,8 +13,10 @@ from config import (
     ASPECT_RATIOS,
     BASE_DIR,
     CAPTION_STYLE_PRESETS,
+    CARRIER_OVERRIDE_MODES,
     DEFAULT_CAPTION_PROMPT,
     DEFAULT_PICASSY_CATEGORIES,
+    DEFAULT_REFERENCE_PROFILES,
     EXPORT_IMAGE_FORMATS,
     EXPORTS_DIR,
     FILENAME_STYLES,
@@ -29,11 +31,14 @@ from config import (
     STUDIO_PRESETS,
     ensure_directories,
     format_picassy_keyword,
+    get_effective_reference_profiles,
+    normalize_carrier_override,
     normalize_cdp_slots,
     normalize_export_image_format,
     normalize_filename_style,
     normalize_metadata_export_mode,
     normalize_picassy_categories,
+    normalize_reference_mode_profiles,
     normalize_reference_strength,
 )
 from database.db_manager import db, slugify_theme
@@ -139,7 +144,8 @@ class CreateJobRequest(BaseModel):
     theme: str
     base_prompt: str = ""
     reference_mode: str = "prompt_only"          # prompt_only | local_upload | pinterest
-    reference_strength: str = "balanced"         # subject_keep | balanced | style_only
+    reference_strength: str = "balanced"         # balanced | fashion_vibe | character_lock | layout_map | subject_keep | style_only
+    carrier_override: str = "auto"               # auto | flat_2d | in_situ
     run_mode: str = "fixed"                      # fixed | continuous
     target_count: int = Field(default=6, ge=1, le=1000)
     batch_size: int = Field(default=4, ge=1, le=50)
@@ -170,6 +176,7 @@ class UpdateJobRequest(BaseModel):
     base_prompt: Optional[str] = None
     reference_mode: Optional[str] = None
     reference_strength: Optional[str] = None
+    carrier_override: Optional[str] = None
     run_mode: Optional[str] = None
     target_count: Optional[int] = None
     batch_size: Optional[int] = None
@@ -187,10 +194,12 @@ class UpdateJobRequest(BaseModel):
     use_ai_caption_prompt: Optional[bool] = None
     optimize_prompt_english: Optional[bool] = None
     model: Optional[str] = None
+    export_root_dir: Optional[str] = None
     preset_id: Optional[str] = None
     fixed_elements: Optional[Dict[str, Any]] = None
     variation_axes: Optional[Dict[str, Any]] = None
     reference_ids: Optional[List[int]] = None
+    replan_unlocked: bool = False
 
 
 class AddGenerationRequest(BaseModel):
@@ -300,6 +309,11 @@ def get_system_status() -> Dict[str, Any]:
         "export_image_formats": EXPORT_IMAGE_FORMATS,
         "filename_styles": FILENAME_STYLES,
         "reference_strength_modes": REFERENCE_STRENGTH_MODES,
+        "carrier_override_modes": CARRIER_OVERRIDE_MODES,
+        "reference_profiles": get_effective_reference_profiles(
+            settings.get("reference_mode_profiles")
+        ),
+        "factory_reference_profiles": DEFAULT_REFERENCE_PROFILES,
         "metadata_providers": METADATA_PROVIDERS,
         "metadata_vision_modes": METADATA_VISION_MODES,
         "picassy_categories": normalize_picassy_categories(
@@ -590,6 +604,9 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     if req.export_root_dir and req.export_root_dir.strip():
         db.update_settings({"export_root_dir": export_root})
 
+    ref_strength = normalize_reference_strength(req.reference_strength, default="balanced")
+    carrier_ov = normalize_carrier_override(req.carrier_override, default="auto")
+
     effective_preset_id = (
         req.preset_id
         if req.preset_id
@@ -600,6 +617,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         fixed_elements=req.fixed_elements,
         variation_axes=req.variation_axes,
         reference_mode=req.reference_mode,
+        reference_strength=ref_strength,
     )
 
     initial_count = (
@@ -607,8 +625,6 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
     )
     if req.run_mode == "continuous":
         initial_count = min(initial_count, req.session_cap)
-
-    ref_strength = normalize_reference_strength(req.reference_strength, default="balanced")
 
     try:
         planned_turns = plan_job_variations(
@@ -620,6 +636,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
             model=req.model,
             reference_mode=req.reference_mode,
             reference_strength=ref_strength,
+            carrier_override=carrier_ov,
             reference_ids=ref_ids,
             cycle_references=req.cycle_references,
             preset_id=effective_preset_id,
@@ -677,6 +694,7 @@ def api_create_job(req: CreateJobRequest) -> Dict[str, Any]:
         base_prompt=req.base_prompt,
         reference_mode=req.reference_mode,
         reference_strength=ref_strength,
+        carrier_override=carrier_ov,
         run_mode=req.run_mode,
         target_count=req.target_count,
         batch_size=req.batch_size,
@@ -787,6 +805,17 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         except ValueError as verr:
             raise HTTPException(status_code=400, detail=str(verr))
 
+    if "carrier_override" in updates:
+        try:
+            updates["carrier_override"] = normalize_carrier_override(
+                updates["carrier_override"], strict=True
+            )
+        except ValueError as verr:
+            raise HTTPException(status_code=400, detail=str(verr))
+
+    replan_unlocked_flag = bool(updates.pop("replan_unlocked", False))
+    new_export_root = str(updates.pop("export_root_dir", "") or "").strip()
+
     if "preferred_cdp_slot" in updates:
         slot_num = int(updates["preferred_cdp_slot"])
         if slot_num < 0 or slot_num > MAX_CDP_SLOTS:
@@ -815,7 +844,7 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         except ValueError as verr:
             raise HTTPException(status_code=400, detail=str(verr))
 
-    if any(k in updates for k in ("preset_id", "fixed_elements", "variation_axes")):
+    if any(k in updates for k in ("preset_id", "fixed_elements", "variation_axes", "reference_strength", "reference_mode")):
         effective_preset = str(
             updates["preset_id"]
             if "preset_id" in updates
@@ -823,6 +852,9 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
         )
         effective_ref_mode = str(
             updates.get("reference_mode") or existing.get("reference_mode") or "prompt_only"
+        )
+        effective_ref_strength = str(
+            updates.get("reference_strength") or existing.get("reference_strength") or "balanced"
         )
         effective_fixed = (
             updates["fixed_elements"]
@@ -839,20 +871,90 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
             fixed_elements=effective_fixed,
             variation_axes=effective_axes,
             reference_mode=effective_ref_mode,
+            reference_strength=effective_ref_strength,
         )
         updates["fixed_elements"] = norm_fixed
         updates["variation_axes"] = norm_axes
 
+    if "reference_mode" in updates and updates["reference_mode"] == "prompt_only":
+        updates["reference_ids"] = []
+
     updated = db.update_job(job_id, **updates) or existing
 
-    # If theme, base_prompt, preset_id, fixed_elements, or variation_axes (enabled_axes / custom_axis_label)
-    # were updated on the job, recompose prompt_final for unlocked `planned` turns so changes apply immediately.
-    if any(k in updates for k in ("theme", "base_prompt", "preset_id", "fixed_elements", "variation_axes", "reference_strength")):
+    if new_export_root:
+        try:
+            resolved_root = str(Path(new_export_root).expanduser().resolve())
+            cur_parent = str(Path(updated["export_dir"]).resolve().parent)
+            if resolved_root != cur_parent:
+                updated = relocate_job_export_dir(job_id, resolved_root) or updated
+        except Exception as exc:
+            logger.warning("Could not relocate job #%s folder: %s", job_id, exc)
+
+    structural_replan_needed = replan_unlocked_flag or any(
+        k in updates
+        for k in (
+            "target_count",
+            "run_mode",
+            "batch_size",
+            "session_cap",
+            "reference_mode",
+            "reference_ids",
+            "cycle_references",
+            "model",
+        )
+    )
+
+    if structural_replan_needed:
+        db.clear_unlocked_planned_generations(job_id)
+        refreshed = db.get_job(job_id) or updated
+        kept_gens = refreshed.get("generations") or []
+        desired_total = (
+            min(int(refreshed["batch_size"]), int(refreshed["session_cap"]))
+            if refreshed.get("run_mode") == "continuous"
+            else int(refreshed["target_count"])
+        )
+        needed = max(0, desired_total - len(kept_gens))
+        if needed > 0:
+            next_index = (max((int(g["index_num"]) for g in kept_gens), default=0)) + 1
+            existing_prompts = [g["prompt_final"] for g in kept_gens]
+            new_turns = plan_job_variations(
+                theme=refreshed["theme"],
+                count=needed,
+                start_index=next_index,
+                base_prompt=refreshed.get("base_prompt") or "",
+                aspect_ratio=refreshed.get("aspect_ratio") or "1:1",
+                model=refreshed.get("model") or "chrome-cdp/gemini",
+                reference_mode=refreshed.get("reference_mode") or "prompt_only",
+                reference_strength=str(refreshed.get("reference_strength") or "balanced"),
+                carrier_override=str(refreshed.get("carrier_override") or "auto"),
+                reference_ids=refreshed.get("reference_ids") or [],
+                cycle_references=bool(refreshed.get("cycle_references", True)),
+                preset_id=refreshed.get("preset_id") or "",
+                fixed_elements=refreshed.get("fixed_elements"),
+                variation_axes=refreshed.get("variation_axes"),
+                existing_prompts=existing_prompts,
+            )
+            db.create_generations_bulk(job_id, new_turns)
+        updated = db.get_job(job_id) or refreshed
+    elif any(
+        k in updates
+        for k in (
+            "theme",
+            "base_prompt",
+            "aspect_ratio",
+            "preset_id",
+            "fixed_elements",
+            "variation_axes",
+            "reference_strength",
+            "carrier_override",
+        )
+    ):
         job_fixed = updated.get("fixed_elements") or {}
         job_va = updated.get("variation_axes") or {}
         job_enabled = job_va.get("enabled_axes")
         custom_label = str(job_va.get("custom_axis_label") or "Custom Variation")
         ref_str = str(updated.get("reference_strength") or "balanced")
+        car_ov = str(updated.get("carrier_override") or "auto")
         for gen in updated.get("generations") or []:
             if gen.get("status") == "planned" and not gen.get("is_locked"):
                 turn_axes = dict(gen.get("variation_axes") or {})
@@ -867,6 +969,7 @@ def api_update_job(job_id: int, req: UpdateJobRequest) -> Dict[str, Any]:
                     has_reference=bool(gen.get("reference_id")),
                     reference_reused=False,
                     reference_strength=ref_str,
+                    carrier_override=car_ov,
                     variation_number=int(gen["index_num"]),
                     enabled_axes=job_enabled,
                     custom_axis_label=custom_label,
@@ -960,6 +1063,7 @@ def api_replan_job(job_id: int) -> Dict[str, Any]:
         model=refreshed.get("model") or "chrome-cdp/gemini",
         reference_mode=refreshed.get("reference_mode") or "prompt_only",
         reference_strength=refreshed.get("reference_strength") or "balanced",
+        carrier_override=str(refreshed.get("carrier_override") or "auto"),
         reference_ids=refreshed.get("reference_ids") or [],
         cycle_references=bool(refreshed.get("cycle_references", True)),
         preset_id=refreshed.get("preset_id") or "",
@@ -998,6 +1102,7 @@ def api_add_generation(job_id: int, req: AddGenerationRequest) -> Dict[str, Any]
             model=job.get("model") or "chrome-cdp/gemini",
             reference_mode=job.get("reference_mode") or "prompt_only",
             reference_strength=job.get("reference_strength") or "balanced",
+            carrier_override=str(job.get("carrier_override") or "auto"),
             reference_ids=[req.reference_id] if req.reference_id else (job.get("reference_ids") or []),
             cycle_references=True,
             preset_id=job.get("preset_id") or "",
@@ -1152,6 +1257,7 @@ def api_update_generation(gen_id: int, req: UpdateGenerationRequest) -> Dict[str
             has_reference=bool(ref_id),
             reference_reused=False,
             reference_strength=str(job.get("reference_strength") or "balanced"),
+            carrier_override=str(job.get("carrier_override") or "auto"),
             variation_number=int(gen["index_num"]),
             enabled_axes=job_va.get("enabled_axes"),
             custom_axis_label=str(turn_axes.get("custom_axis_label") or job_va.get("custom_axis_label") or "Custom Variation"),
@@ -1478,6 +1584,11 @@ def api_update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
                 detail=f"Invalid metadata_provider. Expected one of: {', '.join(METADATA_PROVIDERS)}.",
             )
         updates["metadata_provider"] = mp
+
+    if "reference_mode_profiles" in updates:
+        updates["reference_mode_profiles"] = normalize_reference_mode_profiles(
+            updates["reference_mode_profiles"]
+        )
 
     if "metadata_vision_mode" in updates:
         mvm = str(updates["metadata_vision_mode"] or "").strip().lower()

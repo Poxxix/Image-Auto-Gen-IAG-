@@ -18,10 +18,21 @@ import {
   MagicWand,
   FileCode,
   CaretDown,
+  PencilSimple,
+  ArrowCounterClockwise,
+  Copy,
 } from "@phosphor-icons/react"
 import { StudioPanel, StudioButton, StudioBadge } from "@/components/shared/StudioPrimitives"
 import { BrandIcon } from "@/components/shared/BrandIcon"
 import { ExternalAiImportDialog } from "@/components/studio/ExternalAiImportDialog"
+import { ReferenceProfileEditorDialog } from "@/components/studio/ReferenceProfileEditorDialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   Select,
   SelectContent,
@@ -31,14 +42,17 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
+  CARRIER_OVERRIDE_OPTIONS,
   EXPORT_IMAGE_FORMAT_OPTIONS,
   REFERENCE_ADAPTIVE_PRESET_ID,
   REFERENCE_SAFE_AXES_DEFAULTS,
   REFERENCE_STRENGTH_OPTIONS,
   formatPicassyKeyword,
+  getRecommendedRefModeForCategory,
   getReferenceImageUrl,
   suggestVariationAxes,
   type CaptionStylePreset,
+  type CarrierOverrideMode,
   type CdpSlotStatus,
   type CreateJobPayload,
   type EnabledAxes,
@@ -46,6 +60,7 @@ import {
   type FilenameStyle,
   type FixedElements,
   type ImageSetJob,
+  type ReferenceModeProfile,
   type ReferenceStrengthMode,
   type JobVariationAxesPool,
   type MetadataExportMode,
@@ -98,6 +113,18 @@ export interface CreateScreenProps {
   onDeleteJob: (jobId: number, deleteFiles: boolean) => Promise<void>
   onPickExportFolder: () => Promise<string | null>
   onSaveExportRoot: (dir: string) => Promise<void>
+  editingJob?: ImageSetJob | null
+  referenceProfiles?: Record<ReferenceStrengthMode, ReferenceModeProfile>
+  factoryReferenceProfiles?: Record<ReferenceStrengthMode, ReferenceModeProfile>
+  onSaveReferenceProfiles?: (
+    profiles: Record<string, Partial<ReferenceModeProfile>>
+  ) => Promise<void>
+  onSaveEditedJob?: (
+    jobId: number,
+    payload: CreateJobPayload,
+    startImmediately: boolean
+  ) => Promise<void>
+  onCancelEditingJob?: () => void
 }
 
 const THEME_INSPIRATIONS = [
@@ -167,12 +194,19 @@ export function CreateScreen({
   onDeleteJob,
   onPickExportFolder,
   onSaveExportRoot,
+  editingJob = null,
+  referenceProfiles,
+  factoryReferenceProfiles,
+  onSaveReferenceProfiles,
+  onSaveEditedJob,
+  onCancelEditingJob,
 }: CreateScreenProps) {
   const categoryOptions =
     picassyCategories.length > 0 ? picassyCategories : DEFAULT_CREATE_CATEGORIES
   const [theme, setTheme] = React.useState("")
   const [primaryTag, setPrimaryTag] = React.useState("")
   const primaryTagManualRef = React.useRef(false)
+  const refModeManualRef = React.useRef(false)
   const [category, setCategory] = React.useState<string>(categoryOptions[0] || "Art")
   const [filenameStyle, setFilenameStyle] = React.useState<FilenameStyle>(
     settings?.default_filename_style || "picassy_slug"
@@ -182,6 +216,11 @@ export function CreateScreen({
   const [referenceMode, setReferenceMode] = React.useState<ReferenceMode>("prompt_only")
   const [referenceStrength, setReferenceStrength] =
     React.useState<ReferenceStrengthMode>("balanced")
+  const [carrierOverride, setCarrierOverride] =
+    React.useState<CarrierOverrideMode>("auto")
+  const [editingProfileModeId, setEditingProfileModeId] =
+    React.useState<ReferenceStrengthMode | null>(null)
+  const [preflightOpen, setPreflightOpen] = React.useState(false)
   const [deletingRefBusy, setDeletingRefBusy] = React.useState(false)
   const [runMode, setRunMode] = React.useState<RunMode>("fixed")
   const [targetCount, setTargetCount] = React.useState<number>(
@@ -335,38 +374,203 @@ export function CreateScreen({
       "webp",
     ]
 
-  const applyReferenceAdaptiveDefaults = React.useCallback(() => {
-    setSelectedPresetId(REFERENCE_ADAPTIVE_PRESET_ID)
-    setAiSuggestSource(null)
-    setSuggestError(null)
+  const applyReferenceAdaptiveDefaults = React.useCallback(
+    (modeOverride?: ReferenceStrengthMode) => {
+      const targetMode = modeOverride || referenceStrength
+      const prof = referenceProfiles?.[targetMode]
+      setSelectedPresetId(REFERENCE_ADAPTIVE_PRESET_ID)
+      setAiSuggestSource(null)
+      setSuggestError(null)
+      setFixedElements({
+        subject: "",
+        style: "",
+        color_palette: "",
+        brand_mood: "",
+      })
+      setEnabledFixed({
+        subject: false,
+        style: false,
+        color_palette: false,
+        brand_mood: false,
+      })
+      setAxesText({
+        camera_angles: REFERENCE_SAFE_AXES_DEFAULTS.camera_angles.join("\n"),
+        lighting: (prof?.lighting || REFERENCE_SAFE_AXES_DEFAULTS.lighting).join("\n"),
+        compositions: (
+          prof?.compositions || REFERENCE_SAFE_AXES_DEFAULTS.compositions
+        ).join("\n"),
+        atmospheres: REFERENCE_SAFE_AXES_DEFAULTS.atmospheres.join("\n"),
+        custom_axis: (
+          prof?.custom_axis || REFERENCE_SAFE_AXES_DEFAULTS.custom_axis
+        ).join("\n"),
+      })
+      setCustomAxisLabel(
+        prof?.custom_axis_label || REFERENCE_SAFE_AXES_DEFAULTS.custom_axis_label
+      )
+      setEnabledAxes({
+        camera_angles: false,
+        compositions: true,
+        lighting: true,
+        atmospheres: false,
+        custom_axis: true,
+      })
+    },
+    [referenceProfiles, referenceStrength]
+  )
+
+  const handleSelectReferenceStrength = (nextStrength: ReferenceStrengthMode) => {
+    refModeManualRef.current = true
+    setReferenceStrength(nextStrength)
+    if (
+      referenceMode !== "prompt_only" &&
+      (!usePresetInRef || selectedPresetId === REFERENCE_ADAPTIVE_PRESET_ID)
+    ) {
+      applyReferenceAdaptiveDefaults(nextStrength)
+    }
+  }
+
+  // Hydrate full setup when stepping back from Plan/Run to edit an existing Job
+  React.useEffect(() => {
+    if (!editingJob) return
+    setTheme(editingJob.theme || "")
+    setPrimaryTag(editingJob.primary_tag || editingJob.theme || "")
+    primaryTagManualRef.current = true
+    refModeManualRef.current = true
+    setCategory(editingJob.category || categoryOptions[0] || "Art")
+    setFilenameStyle((editingJob.filename_style as FilenameStyle) || "picassy_slug")
+    setPreferredCdpSlot(Number(editingJob.preferred_cdp_slot || 0))
+    setBasePrompt(editingJob.base_prompt || "")
+    setReferenceMode(editingJob.reference_mode || "prompt_only")
+    setReferenceStrength(
+      (editingJob.reference_strength as ReferenceStrengthMode) || "balanced"
+    )
+    setCarrierOverride(
+      (editingJob.carrier_override as CarrierOverrideMode) || "auto"
+    )
+    setSelectedRefIds(editingJob.reference_ids || [])
+    setRunMode(editingJob.run_mode || "fixed")
+    setTargetCount(editingJob.target_count || 6)
+    setBatchSize(editingJob.batch_size || 4)
+    setSessionCap(editingJob.session_cap || 20)
+    setCycleReferences(Boolean(editingJob.cycle_references))
+    setAspectRatio(editingJob.aspect_ratio || "1:1")
+    setMetadataLanguage(editingJob.metadata_language || "English")
+    setMetadataExportMode(editingJob.metadata_export_mode || "csv")
+    setExportImageFormat(
+      (editingJob.export_image_format as ExportImageFormat) || "original"
+    )
+    setCaptionPrompt(editingJob.caption_prompt || defaultCaptionPrompt)
+    setUseAiCaptionPrompt(Boolean(editingJob.use_ai_caption_prompt))
+    setOptimizePromptEnglish(Boolean(editingJob.optimize_prompt_english))
+    setSelectedModel(editingJob.model || "chrome-cdp/gemini")
+    const pId = editingJob.preset_id || "auto_universal"
+    setSelectedPresetId(pId)
+    setUsePresetInRef(
+      editingJob.reference_mode !== "prompt_only" &&
+        pId !== REFERENCE_ADAPTIVE_PRESET_ID
+    )
     setFixedElements({
-      subject: "",
-      style: "",
-      color_palette: "",
-      brand_mood: "",
+      subject: editingJob.fixed_elements?.subject || "",
+      style: editingJob.fixed_elements?.style || "",
+      color_palette: editingJob.fixed_elements?.color_palette || "",
+      brand_mood: editingJob.fixed_elements?.brand_mood || "",
     })
     setEnabledFixed({
-      subject: false,
-      style: false,
-      color_palette: false,
-      brand_mood: false,
+      subject: editingJob.fixed_elements?.enabled_fixed?.subject ?? true,
+      style: editingJob.fixed_elements?.enabled_fixed?.style ?? true,
+      color_palette: editingJob.fixed_elements?.enabled_fixed?.color_palette ?? true,
+      brand_mood: editingJob.fixed_elements?.enabled_fixed?.brand_mood ?? true,
     })
     setAxesText({
-      camera_angles: REFERENCE_SAFE_AXES_DEFAULTS.camera_angles.join("\n"),
-      lighting: REFERENCE_SAFE_AXES_DEFAULTS.lighting.join("\n"),
-      compositions: REFERENCE_SAFE_AXES_DEFAULTS.compositions.join("\n"),
-      atmospheres: REFERENCE_SAFE_AXES_DEFAULTS.atmospheres.join("\n"),
-      custom_axis: REFERENCE_SAFE_AXES_DEFAULTS.custom_axis.join("\n"),
+      camera_angles: (editingJob.variation_axes?.camera_angles || []).join("\n"),
+      lighting: (editingJob.variation_axes?.lighting || []).join("\n"),
+      compositions: (editingJob.variation_axes?.compositions || []).join("\n"),
+      atmospheres: (editingJob.variation_axes?.atmospheres || []).join("\n"),
+      custom_axis: (editingJob.variation_axes?.custom_axis || []).join("\n"),
     })
-    setCustomAxisLabel(REFERENCE_SAFE_AXES_DEFAULTS.custom_axis_label)
+    setCustomAxisLabel(
+      editingJob.variation_axes?.custom_axis_label || "Custom Variation Axis"
+    )
     setEnabledAxes({
-      camera_angles: false,
-      compositions: true,
-      lighting: true,
-      atmospheres: false,
-      custom_axis: true,
+      camera_angles: editingJob.variation_axes?.enabled_axes?.camera_angles ?? true,
+      compositions: editingJob.variation_axes?.enabled_axes?.compositions ?? true,
+      lighting: editingJob.variation_axes?.enabled_axes?.lighting ?? true,
+      atmospheres: editingJob.variation_axes?.enabled_axes?.atmospheres ?? true,
+      custom_axis:
+        editingJob.variation_axes?.enabled_axes?.custom_axis ??
+        Boolean(editingJob.variation_axes?.custom_axis?.length),
     })
-  }, [])
+  }, [editingJob?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist unsaved Create form draft in sessionStorage so switching tabs never loses work
+  const restoredDraftRef = React.useRef(false)
+  React.useEffect(() => {
+    if (editingJob || restoredDraftRef.current) return
+    restoredDraftRef.current = true
+    try {
+      const raw = sessionStorage.getItem("studio_create_draft_v2")
+      if (!raw) return
+      const d = JSON.parse(raw)
+      if (d.theme) setTheme(d.theme)
+      if (d.primaryTag) {
+        setPrimaryTag(d.primaryTag)
+        primaryTagManualRef.current = true
+      }
+      if (d.category) setCategory(d.category)
+      if (d.basePrompt) setBasePrompt(d.basePrompt)
+      if (d.referenceMode) setReferenceMode(d.referenceMode)
+      if (d.referenceStrength) {
+        setReferenceStrength(d.referenceStrength)
+        refModeManualRef.current = true
+      }
+      if (d.carrierOverride) setCarrierOverride(d.carrierOverride)
+      if (Array.isArray(d.selectedRefIds)) setSelectedRefIds(d.selectedRefIds)
+      if (d.aspectRatio) setAspectRatio(d.aspectRatio)
+      if (d.targetCount) setTargetCount(Number(d.targetCount))
+      if (typeof d.preferredCdpSlot === "number") {
+        setPreferredCdpSlot(d.preferredCdpSlot)
+      }
+    } catch {
+      // ignore invalid session draft
+    }
+  }, [editingJob])
+
+  React.useEffect(() => {
+    if (editingJob) return
+    try {
+      sessionStorage.setItem(
+        "studio_create_draft_v2",
+        JSON.stringify({
+          theme,
+          primaryTag,
+          category,
+          basePrompt,
+          referenceMode,
+          referenceStrength,
+          carrierOverride,
+          selectedRefIds,
+          aspectRatio,
+          targetCount,
+          preferredCdpSlot,
+        })
+      )
+    } catch {
+      // ignore quota error
+    }
+  }, [
+    editingJob,
+    theme,
+    primaryTag,
+    category,
+    basePrompt,
+    referenceMode,
+    referenceStrength,
+    carrierOverride,
+    selectedRefIds,
+    aspectRatio,
+    targetCount,
+    preferredCdpSlot,
+  ])
 
   const handleApplyPreset = (presetId: string) => {
     setSelectedPresetId(presetId)
@@ -591,6 +795,7 @@ export function CreateScreen({
       base_prompt: basePrompt.trim(),
       reference_mode: referenceMode,
       reference_strength: referenceStrength,
+      carrier_override: carrierOverride,
       run_mode: runMode,
       target_count: targetCount,
       batch_size: batchSize,
@@ -616,13 +821,84 @@ export function CreateScreen({
     }
   }
 
-  const handleSubmit = async (autoStart: boolean) => {
+  const handleSubmit = async (autoStart: boolean, forceClone = false) => {
     if (!theme.trim()) return
     setSubmitting(true)
     try {
-      await onCreateJob(buildPayload(autoStart))
+      if (editingJob && !forceClone && onSaveEditedJob) {
+        await onSaveEditedJob(editingJob.id, buildPayload(autoStart), autoStart)
+      } else {
+        await onCreateJob(buildPayload(autoStart))
+      }
+      setPreflightOpen(false)
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleSaveSingleProfileOverride = async (
+    modeId: ReferenceStrengthMode,
+    override: Partial<ReferenceModeProfile>
+  ) => {
+    if (!onSaveReferenceProfiles) return
+    const existingOverrides = { ...(settings?.reference_mode_profiles || {}) }
+    existingOverrides[modeId] = override
+    await onSaveReferenceProfiles(existingOverrides)
+    if (
+      modeId === referenceStrength &&
+      referenceMode !== "prompt_only" &&
+      !usePresetInRef
+    ) {
+      if (override.compositions) {
+        setAxesText((prev) => ({
+          ...prev,
+          compositions: override.compositions!.join("\n"),
+          lighting: (override.lighting || splitLines(prev.lighting)).join("\n"),
+          custom_axis: (override.custom_axis || splitLines(prev.custom_axis)).join("\n"),
+        }))
+      }
+      if (override.custom_axis_label) {
+        setCustomAxisLabel(override.custom_axis_label)
+      }
+    }
+  }
+
+  const handleResetSingleProfileToFactory = async (
+    modeId: ReferenceStrengthMode
+  ) => {
+    if (!onSaveReferenceProfiles) return
+    const existingOverrides = { ...(settings?.reference_mode_profiles || {}) }
+    delete existingOverrides[modeId]
+    await onSaveReferenceProfiles(existingOverrides)
+    const fac = factoryReferenceProfiles?.[modeId]
+    if (
+      fac &&
+      modeId === referenceStrength &&
+      referenceMode !== "prompt_only" &&
+      !usePresetInRef
+    ) {
+      setAxesText((prev) => ({
+        ...prev,
+        compositions: fac.compositions.join("\n"),
+        lighting: fac.lighting.join("\n"),
+        custom_axis: fac.custom_axis.join("\n"),
+      }))
+      setCustomAxisLabel(fac.custom_axis_label)
+    }
+  }
+
+  const handleResetAllProfilesToFactory = async () => {
+    if (!onSaveReferenceProfiles) return
+    await onSaveReferenceProfiles({})
+    const fac = factoryReferenceProfiles?.[referenceStrength]
+    if (fac && referenceMode !== "prompt_only" && !usePresetInRef) {
+      setAxesText((prev) => ({
+        ...prev,
+        compositions: fac.compositions.join("\n"),
+        lighting: fac.lighting.join("\n"),
+        custom_axis: fac.custom_axis.join("\n"),
+      }))
+      setCustomAxisLabel(fac.custom_axis_label)
     }
   }
 
@@ -666,11 +942,32 @@ export function CreateScreen({
 
   return (
     <div className="flex flex-col gap-5">
+      {/* Editing Existing Set Banner (Step-Back Mode) */}
+      {editingJob && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#525252] bg-[#1C1C1C] px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[#FAFAFA]">
+              Editing existing set #{editingJob.id}: &ldquo;{editingJob.theme}&rdquo;
+            </p>
+            <p className="mt-0.5 text-[11px] text-[#A3A3A3]">
+              Adjust any setting below and click{" "}
+              <strong className="text-[#F5F5F5]">Save changes &amp; review plan</strong>{" "}
+              to update remaining shots in-place ({editingJob.counts.completed} already saved on disk are preserved).
+            </p>
+          </div>
+          {onCancelEditingJob && (
+            <StudioButton variant="secondary" onClick={onCancelEditingJob}>
+              Start blank new set
+            </StudioButton>
+          )}
+        </div>
+      )}
+
       {/* Screen Header */}
       <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[#2E2E2E] pb-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-[#F5F5F5]">
-            Create image set
+            {editingJob ? `Edit set #${editingJob.id} setup` : "Create image set"}
           </h1>
           <p className="mt-0.5 max-w-2xl text-xs sm:text-sm text-[#A3A3A3]">
             Set your Picassy keyword and visual source on the left, then configure size, Chrome slot, and export options on the right.
@@ -772,7 +1069,17 @@ export function CreateScreen({
                       value={
                         categoryOptions.includes(category) ? category : categoryOptions[0]
                       }
-                      onValueChange={(v) => v && setCategory(v)}
+                      onValueChange={(v) => {
+                        if (!v) return
+                        setCategory(v)
+                        if (!refModeManualRef.current) {
+                          const rec = getRecommendedRefModeForCategory(v)
+                          setReferenceStrength(rec)
+                          if (referenceMode !== "prompt_only" && !usePresetInRef) {
+                            applyReferenceAdaptiveDefaults(rec)
+                          }
+                        }
+                      }}
                     >
                       <SelectTrigger className="h-9 text-xs sm:text-sm">
                         <SelectValue />
@@ -897,52 +1204,146 @@ export function CreateScreen({
 
                 {referenceMode !== "prompt_only" && (
                   <div className="flex flex-col gap-4 pt-1">
-                    {/* 3-Mode Reference Variation Strength */}
-                    <div className="flex flex-col gap-2">
+                    {/* 6 Intent-Based Reference Modes + Edit & Reset */}
+                    <div className="flex flex-col gap-2.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <label className="text-xs font-medium text-[#F5F5F5]">
-                          Độ bám ảnh mẫu (Reference variation mode)
+                          Chế độ bám ảnh mẫu theo chủ đề (Reference intent mode)
                         </label>
-                        <span className="font-mono-tech text-[11px] text-[#737373]">
-                          75–115 words target
-                        </span>
+                        <div className="flex items-center gap-2">
+                          {referenceProfiles &&
+                            Object.values(referenceProfiles).some(
+                              (p) => p.is_customized
+                            ) && (
+                              <button
+                                type="button"
+                                onClick={handleResetAllProfilesToFactory}
+                                className="inline-flex items-center gap-1 rounded border border-[#383838] bg-[#1C1C1C] px-2 py-0.5 text-[11px] text-[#D4D4D4] hover:border-[#525252] hover:text-[#FAFAFA] cursor-pointer"
+                                title="Khôi phục toàn bộ 6 chế độ về cài đặt gốc"
+                              >
+                                <ArrowCounterClockwise size={11} />
+                                Reset tất cả về gốc
+                              </button>
+                            )}
+                          <span className="font-mono-tech text-[11px] text-[#737373]">
+                            Click Edit on any mode to customize
+                          </span>
+                        </div>
                       </div>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                         {REFERENCE_STRENGTH_OPTIONS.map((opt) => {
                           const active = referenceStrength === opt.id
+                          const prof = referenceProfiles?.[opt.id]
+                          const displayLabel = prof?.label || opt.label
+                          const displayDesc = prof?.description || opt.description
+                          const isCustomized = Boolean(prof?.is_customized)
                           return (
-                            <button
+                            <div
                               key={opt.id}
-                              type="button"
-                              onClick={() => setReferenceStrength(opt.id)}
+                              onClick={() => handleSelectReferenceStrength(opt.id)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault()
+                                  handleSelectReferenceStrength(opt.id)
+                                }
+                              }}
                               className={cn(
-                                "flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors duration-150 cursor-pointer",
+                                "flex flex-col justify-between gap-1.5 rounded-md border p-2.5 text-left transition-colors duration-150 cursor-pointer",
                                 active
-                                  ? "border-[#D4D4D4] bg-[#262626] text-[#F5F5F5]"
+                                  ? "border-[#FAFAFA] bg-[#262626] text-[#F5F5F5]"
                                   : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3] hover:border-[#404040]"
                               )}
                             >
-                              <div className="flex w-full items-center justify-between gap-1.5">
-                                <span className="text-xs font-semibold text-[#F5F5F5]">
-                                  {opt.label}
-                                </span>
-                                <span
-                                  className={cn(
-                                    "rounded px-1.5 py-0.5 font-mono-tech text-[10px]",
-                                    active
-                                      ? "bg-[#FAFAFA] text-[#121212] font-semibold"
-                                      : "bg-[#262626] text-[#737373]"
+                              <div className="flex w-full items-start justify-between gap-1.5">
+                                <div className="min-w-0">
+                                  <span className="block truncate text-xs font-semibold text-[#F5F5F5]">
+                                    {displayLabel}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "mt-0.5 inline-block rounded px-1.5 py-0.5 font-mono-tech text-[9px]",
+                                      active
+                                        ? "bg-[#FAFAFA] text-[#121212] font-semibold"
+                                        : "bg-[#262626] text-[#8A8A8A]"
+                                    )}
+                                  >
+                                    {isCustomized ? "CUSTOMIZED" : opt.badge}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {isCustomized && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        void handleResetSingleProfileToFactory(opt.id)
+                                      }}
+                                      title="Quay lại cài đặt gốc cho chế độ này"
+                                      className="flex size-6 items-center justify-center rounded border border-[#383838] bg-[#1C1C1C] text-[#A3A3A3] hover:text-[#FAFAFA] cursor-pointer"
+                                    >
+                                      <ArrowCounterClockwise size={11} />
+                                    </button>
                                   )}
-                                >
-                                  {opt.badge}
-                                </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEditingProfileModeId(opt.id)
+                                    }}
+                                    title={`Tùy biến câu lệnh & trục của "${displayLabel}"`}
+                                    className="inline-flex h-6 items-center gap-1 rounded border border-[#383838] bg-[#1C1C1C] px-1.5 text-[10px] font-medium text-[#D4D4D4] hover:border-[#525252] hover:text-[#FAFAFA] cursor-pointer"
+                                  >
+                                    <PencilSimple size={10} />
+                                    Edit
+                                  </button>
+                                </div>
                               </div>
                               <p className="text-[11px] leading-snug text-[#A3A3A3]">
-                                {opt.description}
+                                {displayDesc}
                               </p>
-                            </button>
+                            </div>
                           )
                         })}
+                      </div>
+
+                      {/* Carrier Override Strip */}
+                      <div className="mt-1 flex flex-col gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] p-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold text-[#F5F5F5]">
+                            Bề mặt thể hiện (Surface carrier override)
+                          </span>
+                          <span className="text-[11px] text-[#737373]">
+                            {
+                              CARRIER_OVERRIDE_OPTIONS.find(
+                                (c) => c.id === carrierOverride
+                              )?.description
+                            }
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+                          {CARRIER_OVERRIDE_OPTIONS.map((co) => {
+                            const activeCo = carrierOverride === co.id
+                            return (
+                              <button
+                                key={co.id}
+                                type="button"
+                                onClick={() => setCarrierOverride(co.id)}
+                                className={cn(
+                                  "rounded border px-2.5 py-1.5 text-left text-xs font-medium transition-colors cursor-pointer",
+                                  activeCo
+                                    ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                                    : "border-[#2E2E2E] bg-[#262626] text-[#D4D4D4] hover:border-[#404040]"
+                                )}
+                              >
+                                {co.label}
+                              </button>
+                            )
+                          })}
+                        </div>
                       </div>
                     </div>
 
@@ -2145,28 +2546,66 @@ export function CreateScreen({
 
               {/* Primary White Button & Secondary Button */}
               <div className="p-4 sm:p-5 flex flex-col gap-2.5 bg-[#191919]">
-                <StudioButton
-                  variant="primary"
-                  disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
-                  loading={submitting}
-                  onClick={() => handleSubmit(true)}
-                  icon={<Play size={14} weight="fill" />}
-                  className="h-10 w-full text-xs sm:text-sm"
-                >
-                  Plan &amp; start run (
-                  {runMode === "fixed" ? `${targetCount} shots` : `${batchSize}/wave`})
-                </StudioButton>
+                {editingJob ? (
+                  <>
+                    <StudioButton
+                      variant="primary"
+                      disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                      loading={submitting}
+                      onClick={() => handleSubmit(false)}
+                      icon={<ListChecks size={14} weight="bold" />}
+                      className="h-10 w-full text-xs sm:text-sm"
+                    >
+                      Save changes &amp; review plan (#{editingJob.id})
+                    </StudioButton>
 
-                <StudioButton
-                  variant="secondary"
-                  disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
-                  loading={submitting}
-                  onClick={() => handleSubmit(false)}
-                  icon={<ListChecks size={14} />}
-                  className="h-9 w-full"
-                >
-                  Review variation plan first
-                </StudioButton>
+                    <StudioButton
+                      variant="secondary"
+                      disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                      loading={submitting}
+                      onClick={() => handleSubmit(true)}
+                      icon={<Play size={14} weight="fill" />}
+                      className="h-9 w-full"
+                    >
+                      Save &amp; start run now
+                    </StudioButton>
+
+                    <button
+                      type="button"
+                      disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                      onClick={() => handleSubmit(false, true)}
+                      className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-[#2E2E2E] bg-[#171717] text-xs text-[#A3A3A3] hover:border-[#404040] hover:text-[#F5F5F5] cursor-pointer"
+                    >
+                      <Copy size={12} />
+                      Clone as brand-new set
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <StudioButton
+                      variant="primary"
+                      disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                      loading={submitting}
+                      onClick={() => setPreflightOpen(true)}
+                      icon={<Play size={14} weight="fill" />}
+                      className="h-10 w-full text-xs sm:text-sm"
+                    >
+                      Plan &amp; start run (
+                      {runMode === "fixed" ? `${targetCount} shots` : `${batchSize}/wave`})
+                    </StudioButton>
+
+                    <StudioButton
+                      variant="secondary"
+                      disabled={!theme.trim() || submitting || Boolean(referenceUnsupported)}
+                      loading={submitting}
+                      onClick={() => handleSubmit(false)}
+                      icon={<ListChecks size={14} />}
+                      className="h-9 w-full"
+                    >
+                      Review variation plan first (Step 2)
+                    </StudioButton>
+                  </>
+                )}
               </div>
             </div>
           </StudioPanel>
@@ -2240,6 +2679,114 @@ export function CreateScreen({
           applyAxesSuggestionResult(data, opts.applyMetaFields)
         }
       />
+
+      <ReferenceProfileEditorDialog
+        open={Boolean(editingProfileModeId)}
+        modeId={editingProfileModeId}
+        activeProfile={
+          editingProfileModeId ? referenceProfiles?.[editingProfileModeId] || null : null
+        }
+        factoryProfile={
+          editingProfileModeId
+            ? factoryReferenceProfiles?.[editingProfileModeId] || null
+            : null
+        }
+        onClose={() => setEditingProfileModeId(null)}
+        onSaveModeOverride={handleSaveSingleProfileOverride}
+        onResetModeToFactory={handleResetSingleProfileToFactory}
+      />
+
+      {/* 1-Second Pre-Flight Summary Check before direct Start Run */}
+      <Dialog open={preflightOpen} onOpenChange={setPreflightOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Quick check before starting run</DialogTitle>
+            <DialogDescription className="text-xs text-[#A3A3A3]">
+              Verify your key settings below so you never launch with the wrong category,
+              aspect ratio, or reference mode.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="mt-2 divide-y divide-[#262626] rounded-md border border-[#2E2E2E] bg-[#121212] text-xs">
+            <div className="flex items-center justify-between px-3.5 py-2">
+              <span className="text-[#A3A3A3]">Theme &amp; Tag</span>
+              <span className="font-semibold text-[#F5F5F5] truncate max-w-[260px]">
+                {theme.trim()} ({cleanTitleKw})
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3.5 py-2">
+              <span className="text-[#A3A3A3]">Category</span>
+              <span className="rounded bg-[#262626] px-2 py-0.5 font-semibold text-[#FAFAFA]">
+                {category}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3.5 py-2">
+              <span className="text-[#A3A3A3]">Aspect ratio &amp; Count</span>
+              <span className="font-mono-tech font-semibold text-[#FAFAFA]">
+                {aspectRatio} ·{" "}
+                {runMode === "fixed"
+                  ? `${targetCount} shots`
+                  : `Continuous (${batchSize}/wave, cap ${sessionCap})`}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3.5 py-2">
+              <span className="text-[#A3A3A3]">Source &amp; Ref mode</span>
+              <span className="font-medium text-[#F5F5F5] text-right">
+                {referenceMode === "prompt_only"
+                  ? "Pure prompt (no reference images)"
+                  : `${selectedRefIds.length} ref(s) · ${
+                      referenceProfiles?.[referenceStrength]?.label ||
+                      REFERENCE_STRENGTH_OPTIONS.find((o) => o.id === referenceStrength)
+                        ?.label ||
+                      referenceStrength
+                    } · ${
+                      CARRIER_OVERRIDE_OPTIONS.find((c) => c.id === carrierOverride)
+                        ?.shortLabel || "Auto"
+                    }`}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3.5 py-2">
+              <span className="text-[#A3A3A3]">Style preset</span>
+              <span className="text-[#D4D4D4]">{activePresetLabel}</span>
+            </div>
+            <div className="flex items-center justify-between px-3.5 py-2">
+              <span className="text-[#A3A3A3]">Chrome slot &amp; Export</span>
+              <span className="font-mono-tech text-[#D4D4D4]">
+                {preferredCdpSlot > 0 ? `Slot #${preferredCdpSlot}` : "Auto slot"} ·{" "}
+                {exportImageFormat.toUpperCase()} ·{" "}
+                {metadataExportMode === "csv" ? "pin-import.csv" : "Images only"}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <StudioButton
+              variant="secondary"
+              onClick={() => setPreflightOpen(false)}
+            >
+              ← Back to edit
+            </StudioButton>
+            <div className="flex items-center gap-2">
+              <StudioButton
+                variant="secondary"
+                loading={submitting}
+                onClick={() => handleSubmit(false)}
+                icon={<ListChecks size={14} />}
+              >
+                Inspect prompts first
+              </StudioButton>
+              <StudioButton
+                variant="primary"
+                loading={submitting}
+                onClick={() => handleSubmit(true)}
+                icon={<Play size={14} weight="fill" />}
+              >
+                Confirm &amp; start run
+              </StudioButton>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

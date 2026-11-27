@@ -460,6 +460,7 @@ class JobRunner:
             model=job.get("model") or "chrome-cdp/gemini",
             reference_mode=job.get("reference_mode") or "prompt_only",
             reference_strength=str(job.get("reference_strength") or "balanced"),
+            carrier_override=str(job.get("carrier_override") or "auto"),
             reference_ids=job.get("reference_ids") or [],
             cycle_references=bool(job.get("cycle_references", True)),
             preset_id=job.get("preset_id") or "",

@@ -16,6 +16,8 @@ import {
   Trash,
   ArrowsOutSimple,
   ArrowsInSimple,
+  ArrowLeft,
+  Sliders,
 } from "@phosphor-icons/react"
 import {
   StudioPanel,
@@ -53,6 +55,7 @@ export interface RunScreenProps {
   onRetryMetadata: (genId: number, useBrowserTurn: boolean) => Promise<void>
   onDeleteGeneration: (genId: number) => Promise<void>
   onOpenFolder: (jobId: number) => Promise<void>
+  onBackToSetup?: (job: ImageSetJob) => Promise<void>
 }
 
 export function RunScreen({
@@ -73,6 +76,7 @@ export function RunScreen({
   onRetryMetadata,
   onDeleteGeneration,
   onOpenFolder,
+  onBackToSetup,
 }: RunScreenProps) {
   const [pageIndex, setPageIndex] = React.useState(1)
   const [expandLogs, setExpandLogs] = React.useState(false)
@@ -143,6 +147,30 @@ export function RunScreen({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onBackToSetup && (
+            <StudioButton
+              variant="secondary"
+              onClick={() => onBackToSetup(job)}
+              icon={<ArrowLeft size={14} />}
+              title={
+                isRunning
+                  ? "Pause run and step back to Step 1 to adjust settings for remaining shots"
+                  : "Step back to Step 1 to review or edit set settings"
+              }
+            >
+              {isRunning ? "Pause & edit setup" : "Edit setup"}
+            </StudioButton>
+          )}
+
+          <StudioButton
+            variant="secondary"
+            onClick={() => onNavigateTab("plan")}
+            icon={<Sliders size={14} />}
+            title="View or adjust planned prompts in Step 2"
+          >
+            Plan ({counts.planned})
+          </StudioButton>
+
           {job.status === "planned" && (
             <StudioButton
               variant="primary"

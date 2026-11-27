@@ -99,9 +99,18 @@ FILENAME_STYLES: List[str] = [
 ]
 
 REFERENCE_STRENGTH_MODES: List[str] = [
-    "subject_keep",
     "balanced",
+    "fashion_vibe",
+    "character_lock",
+    "layout_map",
+    "subject_keep",
     "style_only",
+]
+
+CARRIER_OVERRIDE_MODES: List[str] = [
+    "auto",
+    "flat_2d",
+    "in_situ",
 ]
 
 
@@ -113,6 +122,13 @@ def normalize_reference_strength(
     raw = (value or "").strip().lower()
     if not raw:
         return default
+    aliases = {
+        "motif_carrier_lock": "balanced",
+        "fashion_vibe_remix": "fashion_vibe",
+        "character_pose_scene": "character_lock",
+        "composition_remap": "layout_map",
+    }
+    raw = aliases.get(raw, raw)
     if raw in REFERENCE_STRENGTH_MODES:
         return raw
     if strict:
@@ -120,6 +136,289 @@ def normalize_reference_strength(
             f"Unsupported reference_strength '{value}'. Expected one of: {', '.join(REFERENCE_STRENGTH_MODES)}."
         )
     return default
+
+
+def normalize_carrier_override(
+    value: Optional[str],
+    default: str = "auto",
+    strict: bool = False,
+) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    aliases = {
+        "force_flat_2d": "flat_2d",
+        "force_in_situ": "in_situ",
+    }
+    raw = aliases.get(raw, raw)
+    if raw in CARRIER_OVERRIDE_MODES:
+        return raw
+    if strict:
+        raise ValueError(
+            f"Unsupported carrier_override '{value}'. Expected one of: {', '.join(CARRIER_OVERRIDE_MODES)}."
+        )
+    return default
+
+
+DEFAULT_REFERENCE_PROFILES: Dict[str, Dict[str, Any]] = {
+    "balanced": {
+        "id": "balanced",
+        "label": "Motif & Surface",
+        "badge": "TATTOO · ART · NAIL",
+        "description": "Khóa chất liệu & bề mặt (giấy ra giấy, da ra da, móng ra móng); vẽ mới hoàn toàn cấu trúc họa tiết không trùng 1:1",
+        "recommended_categories": ["Tattoos", "Art", "Nail"],
+        "instruction_template": (
+            'Create a new "{theme}" design matching 100% of the attached reference\'s Style DNA '
+            "and {carrier_clause}, inventing a fresh motif structure, linework flow, and arrangement."
+        ),
+        "custom_axis_label": "Motif redesign",
+        "compositions": [
+            "Re-arranged primary motif silhouette with balanced asymmetrical flow",
+            "Fresh central focal structure with clean breathing margins",
+            "Redesigned secondary ornament placement and organic visual rhythm",
+            "Shifted focal weight with varied element scale and spacing",
+            "Diagonal motif movement with fresh contour and negative-space balance",
+            "Restructured motif proportions and refined internal detail hierarchy",
+        ],
+        "lighting": [
+            "Consistent illumination and shading fidelity matching the reference surface",
+            "Refined tonal contrast between crisp linework and soft midtone gradients",
+            "Subtle highlight and shadow balance faithful to the reference medium",
+            "Clean micro-detail clarity with natural, unforced tonal roll-off",
+            "Delicate stipple, wash, or smooth shading depth matching the reference",
+            "Crisp edge definition paired with soft transitional shading",
+        ],
+        "custom_axis": [
+            "Invent new primary shape contours, element count, and fine ornament details",
+            "Replace the exact reference pattern with a fresh sibling design in the same craft",
+            "Vary line weight, curvature, and decorative accents while keeping the same medium",
+            "Create a distinct companion motif with new symmetry and focal sub-elements",
+            "Redraw the core subject with fresh proportions, posture, and detail placement",
+            "Introduce new structural branching and secondary micro-motifs in the same style",
+        ],
+    },
+    "fashion_vibe": {
+        "id": "fashion_vibe",
+        "label": "Fashion & Vibe Remix",
+        "badge": "OUTFITS · LOOKBOOK",
+        "description": "Khóa gu phối đồ, chất ảnh flash/mirror selfie/film & vibe makeup; đổi gương mặt mẫu mới, mix lại set trang phục và dáng đứng",
+        "recommended_categories": ["Fashions"],
+        "instruction_template": (
+            'Create a fresh "{theme}" look matching the attached reference\'s exact fashion subculture, '
+            "camera flash/film aesthetic, and {carrier_clause}: feature a DIFFERENT model face, "
+            "remix new outfit pieces and accessories in the same aesthetic, and vary the pose."
+        ),
+        "custom_axis_label": "Outfit & pose remix",
+        "compositions": [
+            "Candid waist-up framing with relaxed off-center posture",
+            "Full-fit mirror or street angle showcasing layered silhouette proportions",
+            "Three-quarter casual turn highlighting garment drape and accessories",
+            "Slightly elevated phone-angle framing with authentic candid energy",
+            "Seated or leaning pose emphasizing footwear, hem, and outfit styling",
+            "Balanced medium editorial crop focusing on neckline, hair, and layering",
+        ],
+        "lighting": [
+            "Authentic candid flash and ambient room/street glow matching the reference vibe",
+            "Warm indoor tungsten and soft mirror reflection tones faithful to the reference",
+            "Crisp direct camera flash pop with natural shadow falloff",
+            "Soft overcast urban daylight preserving true fabric texture and sheen",
+            "Moody evening ambient light with subtle film highlight roll-off",
+            "Clean natural window side-light accentuating garment weave and skin tone",
+        ],
+        "custom_axis": [
+            "Mix a fresh top, bottom, and accessory combination within the exact same style aesthetic",
+            "Swap garment textures and silhouette cut while keeping the signature subculture vibe",
+            "Introduce a new hairstyle nuance, bag/jewelry accent, and relaxed hand gesture",
+            "Re-style color blocking and layering proportions on a brand-new model identity",
+            "Pair alternative outerwear or knitwear texture with fresh candid attitude",
+            "Create a distinct sibling outfit coordination with new focal details",
+        ],
+    },
+    "character_lock": {
+        "id": "character_lock",
+        "label": "Character / Subject Lock",
+        "badge": "AI PROMPTS · ANIME",
+        "description": "Giữ nguyên diện mạo nhân vật hoặc hình dáng sản phẩm mẫu; đổi tư thế, góc máy, hành động và bối cảnh xung quanh",
+        "recommended_categories": ["AI Prompts", "Anime"],
+        "instruction_template": (
+            'Create a new "{theme}" shot preserving the core character identity or hero product design '
+            "from the attached reference ({carrier_clause}), placing them in a fresh pose, camera angle, and setting."
+        ),
+        "custom_axis_label": "Pose & scene staging",
+        "compositions": [
+            "Dynamic three-quarter action or gesture framing with depth",
+            "Expressive close medium portrait from a fresh viewing angle",
+            "Wide environmental storytelling frame anchoring the subject in a new scene",
+            "Over-the-shoulder or profile turn with strong foreground-background depth",
+            "Low-angle heroic stance with clean spatial separation",
+            "Relaxed candid mid-shot with natural interaction in the setting",
+        ],
+        "lighting": [
+            "Cinematic directional key light with subtle rim separation",
+            "Soft golden natural light wrapping smoothly across features",
+            "Moody atmospheric contrast with warm practical highlights",
+            "Crisp studio or daylight clarity preserving color fidelity",
+            "Luminous backlit edge glow with balanced shadow detail",
+            "Clean diffused ambient light matching the new scene mood",
+        ],
+        "custom_axis": [
+            "Stage a fresh body posture, expression, and interactive prop in a new environment",
+            "Shift wardrobe accents and background storytelling while keeping subject identity intact",
+            "Capture a candid mid-motion moment from an alternate perspective",
+            "Place the hero subject in a contrasting architectural or outdoor setting",
+            "Vary gesture, head tilt, and framing distance for series variety",
+            "Combine calm poised expression with fresh environmental depth cues",
+        ],
+    },
+    "layout_map": {
+        "id": "layout_map",
+        "label": "Layout & Lighting Map",
+        "badge": "WALLPAPER · POSTER",
+        "description": "Khóa khung bố cục hình học, tỷ lệ khoảng trống (negative space) và ánh sáng/bảng màu; thay chủ thể bên trong bằng chủ đề mới",
+        "recommended_categories": ["Wallpaper", "Posters & Visuals", "Photography Topics"],
+        "instruction_template": (
+            'Create a "{theme}" visual adopting the attached reference\'s spatial composition, '
+            "negative-space balance, lighting mood, and color harmony ({carrier_clause}), replacing the focal subject cleanly."
+        ),
+        "custom_axis_label": "Focal subject staging",
+        "compositions": [
+            "Preserve generous breathing negative space balanced against a crisp focal mass",
+            "Mirror the reference's geometric visual weight with fresh organic contours",
+            "Layered depth planes transitioning smoothly from foreground to airy background",
+            "Centered minimal emblem balance with clean peripheral margin",
+            "Flowing diagonal visual rhythm anchored in the lower or upper third",
+            "Symmetrical graphic alignment with refined tonal separation",
+        ],
+        "lighting": [
+            "Match the reference's tonal gradient, highlight softness, and color temperature",
+            "Luminous ambient glow with smooth shadow transitions",
+            "Crisp directional light carving clean form against the backdrop",
+            "Soft pastel or moody twilight wash faithful to the reference palette",
+            "Subtle rim illumination separating focal form from negative space",
+            "Balanced gallery-grade tonal contrast with zero harsh clipping",
+        ],
+        "custom_axis": [
+            "Introduce a fresh thematic focal subject scaled cleanly to the layout",
+            "Vary internal silhouette geometry while keeping clean lockscreen/poster breathing room",
+            "Reinterpret the focal motif with alternate organic or architectural forms",
+            "Shift color accent placement subtly within the reference's harmonic palette",
+            "Craft a minimalist companion variation with distinct focal contours",
+            "Balance fine foreground texture against calm uncluttered background air",
+        ],
+    },
+    "subject_keep": {
+        "id": "subject_keep",
+        "label": "Close Sibling",
+        "badge": "CLOSE",
+        "description": "Biến tấu rất sát ảnh gốc: giữ nguyên bề mặt, chất liệu & chủ thể chính; chỉ đổi nhẹ bố cục và chi tiết phụ",
+        "recommended_categories": [],
+        "instruction_template": (
+            'Create a close "{theme}" variation of the attached reference image: '
+            "lock {carrier_clause}, preserving medium, palette, and core subject motif while varying layout and secondary details."
+        ),
+        "custom_axis_label": "Subtle detail shift",
+        "compositions": [
+            "Slightly shifted focal balance keeping close fidelity to original framing",
+            "Subtle asymmetrical spacing adjustment with clean margins",
+            "Refined secondary detail placement around the preserved core motif",
+            "Gentle variation in contour flow and negative-space proportion",
+            "Close sibling arrangement with refreshed minor accents",
+            "Balanced micro-shift in posture and supporting elements",
+        ],
+        "lighting": [
+            "Exact illumination and shading fidelity matching the reference image",
+            "Consistent tonal contrast and highlight roll-off faithful to the input",
+            "Subtle micro-shading refinement keeping identical mood and palette",
+            "Clean surface texture and shadow balance matching the reference",
+        ],
+        "custom_axis": [
+            "Adjust secondary ornaments, micro-textures, and spacing subtly without losing the core look",
+            "Vary minor accessory or contour nuances while preserving the main motif",
+            "Refresh supporting linework and edge accents as a close companion piece",
+            "Shift subtle pose angle and secondary element count on the same surface",
+        ],
+    },
+    "style_only": {
+        "id": "style_only",
+        "label": "Pure Style DNA",
+        "badge": "LOOSE",
+        "description": "Tự do nhất: chỉ mượn bút pháp nghệ thuật, hạt chất liệu & bảng màu để dựng chủ thể và khung cảnh mới hoàn toàn",
+        "recommended_categories": [],
+        "instruction_template": (
+            'Create a brand-new "{theme}" visual borrowing ONLY the artistic medium, '
+            "surface texture, lighting mood, and color palette from the attached reference image ({carrier_clause}), "
+            "freely staging a fresh subject arrangement and setting."
+        ),
+        "custom_axis_label": "Creative scene staging",
+        "compositions": [
+            "Wide environmental composition with strong foreground-to-background depth",
+            "Rule-of-thirds editorial placement in a fresh setting",
+            "Dynamic diagonal perspective with expressive negative space",
+            "Intimate close-up crop highlighting tactile medium and brushwork",
+            "Symmetrical hero framing in an imaginative new environment",
+            "Layered storytelling arrangement with distinct silhouette",
+        ],
+        "lighting": [
+            "Atmospheric lighting mood and color harmony inspired by the reference",
+            "Warm directional glow paired with rich tonal shadow depth",
+            "Soft diffused ambient illumination showcasing medium texture",
+            "Dramatic rim and side lighting translated into the reference palette",
+        ],
+        "custom_axis": [
+            "Invent a completely fresh scene, subject pose, and spatial story in the borrowed medium",
+            "Explore a new perspective and environmental context using the reference's color DNA",
+            "Stage a distinct focal subject and mood variation with zero layout repetition",
+            "Combine fresh architectural or natural elements rendered in the exact reference craft",
+        ],
+    },
+}
+
+
+def normalize_reference_mode_profiles(raw_profiles: Any) -> Dict[str, Dict[str, Any]]:
+    """Sanitizes user-customized reference mode overrides stored in `settings`."""
+    if not isinstance(raw_profiles, dict):
+        return {}
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    for mode_id, entry in raw_profiles.items():
+        if mode_id not in DEFAULT_REFERENCE_PROFILES or not isinstance(entry, dict):
+            continue
+        item: Dict[str, Any] = {}
+        for str_key in ("label", "description", "instruction_template", "custom_axis_label"):
+            val = str(entry.get(str_key) or "").strip()
+            if val:
+                item[str_key] = val[:600]
+        for list_key in ("compositions", "lighting", "custom_axis"):
+            raw_list = entry.get(list_key)
+            if isinstance(raw_list, list):
+                lines = [str(x).strip()[:200] for x in raw_list if str(x).strip()]
+                if lines:
+                    item[list_key] = lines[:20]
+        if item:
+            cleaned[mode_id] = item
+    return cleaned
+
+
+def get_effective_reference_profiles(
+    custom_overrides: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Merges user customizations over `DEFAULT_REFERENCE_PROFILES` and marks `is_customized`."""
+    norm_custom = normalize_reference_mode_profiles(custom_overrides)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for mode_id, factory in DEFAULT_REFERENCE_PROFILES.items():
+        override = norm_custom.get(mode_id) or {}
+        combined = {
+            **factory,
+            "compositions": list(override.get("compositions") or factory["compositions"]),
+            "lighting": list(override.get("lighting") or factory["lighting"]),
+            "custom_axis": list(override.get("custom_axis") or factory["custom_axis"]),
+            "label": override.get("label") or factory["label"],
+            "description": override.get("description") or factory["description"],
+            "instruction_template": override.get("instruction_template") or factory["instruction_template"],
+            "custom_axis_label": override.get("custom_axis_label") or factory["custom_axis_label"],
+            "is_customized": bool(override),
+        }
+        merged[mode_id] = combined
+    return merged
 
 METADATA_PROVIDERS: List[str] = [
     "auto",
@@ -1106,6 +1405,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "cdp_recycle_tab_interval": 20,
     "reference_similarity_check": True,
     "drop_ref_on_similarity_retry": False,
+    "reference_mode_profiles": {},
     "export_root_dir": str(EXPORTS_DIR),
     "export_image_format": "original",   # original | png | jpg | webp
     "max_concurrency": 4,

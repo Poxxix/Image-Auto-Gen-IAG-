@@ -44,6 +44,7 @@ import {
   type ImageSetJob,
   type MetadataExportMode,
   type ReferenceItem,
+  type ReferenceModeProfile,
   type StudioSettings,
   type StudioTab,
   type SystemStatusResponse,
@@ -63,6 +64,7 @@ export function App() {
     const saved = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY)
     return saved ? Number(saved) : null
   })
+  const [editingJobId, setEditingJobId] = React.useState<number | null>(null)
   const [references, setReferences] = React.useState<ReferenceItem[]>([])
   const [logs, setLogs] = React.useState<ActivityLog[]>([])
   const [notice, setNotice] = React.useState<{
@@ -82,6 +84,11 @@ export function App() {
     }
     return jobs[0] || null
   }, [jobs, activeJobId])
+
+  const editingJob = React.useMemo(() => {
+    if (!editingJobId) return null
+    return jobs.find((j) => j.id === editingJobId) || null
+  }, [jobs, editingJobId])
 
   const runningJobIds = React.useMemo(
     () => jobs.filter((j) => j.status === "running").map((j) => j.id),
@@ -300,6 +307,12 @@ export function App() {
   const handleCreateJob = async (payload: CreateJobPayload) => {
     try {
       const created = await createJob(payload)
+      setEditingJobId(null)
+      try {
+        sessionStorage.removeItem("studio_create_draft_v2")
+      } catch {
+        // ignore
+      }
       updateJobInState(created)
       if (payload.auto_start) {
         setActiveTab("run")
@@ -318,6 +331,89 @@ export function App() {
       setNotice({
         tone: "rose",
         message: err instanceof Error ? err.message : "Could not create image set.",
+      })
+    }
+  }
+
+  const handleBackToSetup = async (targetJob: ImageSetJob) => {
+    try {
+      let fresh = targetJob
+      if (targetJob.status === "running") {
+        fresh = await pauseJob(targetJob.id)
+      } else {
+        fresh = await fetchJob(targetJob.id).catch(() => targetJob)
+      }
+      updateJobInState(fresh)
+      setActiveJobId(fresh.id)
+      setEditingJobId(fresh.id)
+      setActiveTab("create")
+      setNotice({
+        tone: "sky",
+        message: `Loaded set #${fresh.id} ("${fresh.theme}") into Step 1 — edit any setting and save in-place.`,
+      })
+    } catch (err) {
+      setNotice({
+        tone: "rose",
+        message: err instanceof Error ? err.message : "Could not load set into Step 1.",
+      })
+    }
+  }
+
+  const handleSaveEditedJob = async (
+    jobId: number,
+    payload: CreateJobPayload,
+    startImmediately: boolean
+  ) => {
+    try {
+      const updated = await updateJob(jobId, {
+        ...payload,
+        replan_unlocked: true,
+      })
+      updateJobInState(updated)
+      setEditingJobId(null)
+      if (startImmediately) {
+        const started = await startJob(jobId)
+        updateJobInState(started)
+        setActiveTab("run")
+        setNotice({
+          tone: "sky",
+          message: `Updated set #${jobId} and resumed generation.`,
+        })
+      } else {
+        setActiveTab("plan")
+        setNotice({
+          tone: "emerald",
+          message: `Updated set #${jobId} ("${updated.theme}") and recalculated planned variations.`,
+        })
+      }
+    } catch (err) {
+      setNotice({
+        tone: "rose",
+        message: err instanceof Error ? err.message : "Failed to update image set.",
+      })
+    }
+  }
+
+  const handleSaveReferenceProfiles = async (
+    profiles: Record<string, Partial<ReferenceModeProfile>>
+  ) => {
+    try {
+      await updateStudioSettings({ reference_mode_profiles: profiles })
+      await refreshAll()
+      setNotice({
+        tone: "emerald",
+        message:
+          Object.keys(profiles).length > 0
+            ? "Saved customized Reference Mode settings."
+            : "Restored Reference Mode settings to factory defaults.",
+      })
+    } catch (err) {
+      setNotice({
+        tone: "rose",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Failed to save Reference Mode customization.",
       })
     }
   }
@@ -705,6 +801,9 @@ export function App() {
   const handleDeleteJob = async (jobId: number, deleteFiles: boolean) => {
     try {
       await deleteJob(jobId, deleteFiles)
+      if (editingJobId === jobId) {
+        setEditingJobId(null)
+      }
       const remaining = await fetchJobs()
       setJobs(remaining)
       const nextId = remaining[0]?.id || null
@@ -842,6 +941,12 @@ export function App() {
           onDeleteJob={handleDeleteJob}
           onPickExportFolder={() => handlePickExportFolder()}
           onSaveExportRoot={handleSaveExportRoot}
+          editingJob={editingJob}
+          referenceProfiles={status?.reference_profiles}
+          factoryReferenceProfiles={status?.factory_reference_profiles}
+          onSaveReferenceProfiles={handleSaveReferenceProfiles}
+          onSaveEditedJob={handleSaveEditedJob}
+          onCancelEditingJob={() => setEditingJobId(null)}
         />
       )}
 
@@ -851,8 +956,10 @@ export function App() {
           presets={status?.presets || []}
           picassyCategories={status?.picassy_categories || []}
           cdpSlots={status?.cdp_slots || []}
+          referenceProfiles={status?.reference_profiles}
           allReferences={references}
           onNavigateTab={handleSelectTab}
+          onBackToSetup={(j) => void handleBackToSetup(j)}
           onUpdateJob={handleUpdateJob}
           onDeleteJob={handleDeleteJob}
           onReplanJob={handleReplanJob}
@@ -894,6 +1001,7 @@ export function App() {
           onRetryMetadata={handleRetryMetadata}
           onDeleteGeneration={handleDeleteGeneration}
           onOpenFolder={handleOpenFolder}
+          onBackToSetup={handleBackToSetup}
         />
       )}
 

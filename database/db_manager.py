@@ -16,6 +16,7 @@ from config import (
     MAX_CDP_SLOTS,
     SENSITIVE_SETTING_KEYS,
     format_picassy_keyword,
+    normalize_carrier_override,
     normalize_cdp_slots,
     normalize_export_image_format,
     normalize_filename_style,
@@ -54,6 +55,7 @@ SCHEMA: Dict[str, str] = {
             base_prompt TEXT DEFAULT '',
             reference_mode TEXT DEFAULT 'prompt_only',
             reference_strength TEXT DEFAULT 'balanced',
+            carrier_override TEXT DEFAULT 'auto',
             run_mode TEXT DEFAULT 'fixed',
             target_count INTEGER DEFAULT 6,
             batch_size INTEGER DEFAULT 4,
@@ -1018,6 +1020,9 @@ class DatabaseManager:
         data["reference_strength"] = normalize_reference_strength(
             data.get("reference_strength"), default="balanced"
         )
+        data["carrier_override"] = normalize_carrier_override(
+            data.get("carrier_override"), default="auto"
+        )
         data["preferred_cdp_slot"] = int(data.get("preferred_cdp_slot") or 0)
         data["active_cdp_slot"] = int(data.get("active_cdp_slot") or 0)
         data["caption_prompt"] = data.get("caption_prompt") or ""
@@ -1081,6 +1086,7 @@ class DatabaseManager:
         base_prompt: str = "",
         reference_mode: str = "prompt_only",
         reference_strength: str = "balanced",
+        carrier_override: str = "auto",
         run_mode: str = "fixed",
         target_count: int = 6,
         batch_size: int = 4,
@@ -1122,13 +1128,14 @@ class DatabaseManager:
         clean_mode = normalize_metadata_export_mode(metadata_export_mode, default="csv")
         clean_image_format = normalize_export_image_format(export_image_format)
         clean_ref_strength = normalize_reference_strength(reference_strength, default="balanced")
+        clean_carrier = normalize_carrier_override(carrier_override, default="auto")
 
         now = now_iso()
         with self._conn() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO jobs (
-                    theme, slug, base_prompt, reference_mode, reference_strength, run_mode,
+                    theme, slug, base_prompt, reference_mode, reference_strength, carrier_override, run_mode,
                     target_count, batch_size, session_cap, cycle_references,
                     aspect_ratio, metadata_language, metadata_export_mode,
                     export_image_format, primary_tag, category, filename_style,
@@ -1137,7 +1144,7 @@ class DatabaseManager:
                     model, export_dir, preset_id, fixed_elements_json,
                     variation_axes_json, reference_ids_json, status,
                     current_step, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_theme,
@@ -1145,6 +1152,7 @@ class DatabaseManager:
                     base_prompt.strip(),
                     reference_mode,
                     clean_ref_strength,
+                    clean_carrier,
                     run_mode,
                     int(target_count),
                     int(batch_size),
@@ -1299,6 +1307,7 @@ class DatabaseManager:
             "base_prompt",
             "reference_mode",
             "reference_strength",
+            "carrier_override",
             "run_mode",
             "target_count",
             "batch_size",
@@ -1342,6 +1351,10 @@ class DatabaseManager:
         if "reference_strength" in updates:
             updates["reference_strength"] = normalize_reference_strength(
                 updates["reference_strength"], default="balanced"
+            )
+        if "carrier_override" in updates:
+            updates["carrier_override"] = normalize_carrier_override(
+                updates["carrier_override"], default="auto"
             )
         if "preferred_cdp_slot" in updates:
             val = int(updates["preferred_cdp_slot"] or 0)

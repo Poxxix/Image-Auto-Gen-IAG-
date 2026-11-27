@@ -1,11 +1,58 @@
 export type StudioTab = "create" | "plan" | "run" | "gallery" | "settings"
 
 export type ReferenceMode = "prompt_only" | "local_upload" | "pinterest"
-export type ReferenceStrengthMode = "subject_keep" | "balanced" | "style_only"
+export type ReferenceStrengthMode =
+  | "balanced"
+  | "fashion_vibe"
+  | "character_lock"
+  | "layout_map"
+  | "subject_keep"
+  | "style_only"
+export type CarrierOverrideMode = "auto" | "flat_2d" | "in_situ"
 export type RunMode = "fixed" | "continuous"
 export type MetadataExportMode = "csv" | "none"
 
 export const REFERENCE_ADAPTIVE_PRESET_ID = "reference_adaptive"
+
+export interface ReferenceModeProfile {
+  id: ReferenceStrengthMode
+  label: string
+  badge: string
+  description: string
+  recommended_categories: string[]
+  instruction_template: string
+  custom_axis_label: string
+  compositions: string[]
+  lighting: string[]
+  custom_axis: string[]
+  is_customized?: boolean
+}
+
+export const CARRIER_OVERRIDE_OPTIONS: ReadonlyArray<{
+  id: CarrierOverrideMode
+  label: string
+  shortLabel: string
+  description: string
+}> = [
+  {
+    id: "auto",
+    label: "Auto (Theo từng ảnh mẫu)",
+    shortLabel: "Auto carrier",
+    description: "Ảnh mẫu trên giấy ra giấy, trên da/đời thực giữ trên da/đời thực",
+  },
+  {
+    id: "flat_2d",
+    label: "Ép phẳng 2D / Flash giấy",
+    shortLabel: "Force 2D paper",
+    description: "Tách họa tiết ra bản vẽ phẳng 2D trên giấy sạch dù ảnh mẫu chụp ngoài đời",
+  },
+  {
+    id: "in_situ",
+    label: "Ép thực tế / Trên da & vật thật",
+    shortLabel: "Force real/skin",
+    description: "Đưa thiết kế lên da thật, móng thật hoặc bối cảnh thật dù ảnh mẫu là bản vẽ 2D",
+  },
+]
 
 export const REFERENCE_SAFE_AXES_DEFAULTS = {
   camera_angles: [
@@ -18,8 +65,6 @@ export const REFERENCE_SAFE_AXES_DEFAULTS = {
     "Shifted focal weight with varied element scale and spacing",
     "Diagonal motif movement with fresh contour and negative-space balance",
     "Restructured motif proportions and refined internal detail hierarchy",
-    "Alternating compact and open detail clusters within original framing",
-    "Fresh geometric and organic curve variation across the core design",
   ],
   lighting: [
     "Consistent illumination and shading fidelity matching the reference surface",
@@ -48,29 +93,77 @@ export const REFERENCE_STRENGTH_OPTIONS: ReadonlyArray<{
   label: string
   badge: string
   description: string
+  recommendedCategories: string[]
 }> = [
   {
-    id: "subject_keep",
-    label: "Giữ sát mẫu · Khóa bề mặt",
-    badge: "CLOSE",
+    id: "balanced",
+    label: "Motif & Surface",
+    badge: "TATTOO · ART · NAIL",
     description:
-      "Khóa chặt bề mặt (giấy ra giấy, da ra da) & chủ thể chính; chỉ đổi nhẹ bố cục và chi tiết phụ",
+      "Khóa chất liệu & bề mặt (giấy giữ giấy, da giữ da); thiết kế mới cấu trúc họa tiết không trùng 1:1",
+    recommendedCategories: ["Tattoos", "Art", "Nail"],
   },
   {
-    id: "balanced",
-    label: "Đổi họa tiết mới · Khóa bề mặt",
-    badge: "RECOMMENDED",
+    id: "fashion_vibe",
+    label: "Fashion & Vibe Remix",
+    badge: "OUTFITS · LOOKBOOK",
     description:
-      "Giấy giữ giấy, da giữ da (không nhảy bối cảnh); thiết kế lại mẫu họa tiết & đường nét mới không trùng gốc",
+      "Khóa gu phối đồ, chất ảnh flash/mirror selfie/film; đổi gương mặt mẫu mới, mix lại trang phục & dáng đứng",
+    recommendedCategories: ["Fashions"],
+  },
+  {
+    id: "character_lock",
+    label: "Character / Subject Lock",
+    badge: "AI PROMPTS · ANIME",
+    description:
+      "Giữ nguyên diện mạo nhân vật hoặc sản phẩm mẫu; đổi tư thế, góc máy, hành động và bối cảnh",
+    recommendedCategories: ["AI Prompts", "Anime"],
+  },
+  {
+    id: "layout_map",
+    label: "Layout & Lighting Map",
+    badge: "WALLPAPER · POSTER",
+    description:
+      "Khóa khung bố cục hình học, tỷ lệ khoảng trống & ánh sáng/bảng màu; thay chủ thể bên trong bằng chủ đề mới",
+    recommendedCategories: ["Wallpaper", "Posters & Visuals", "Photography Topics"],
+  },
+  {
+    id: "subject_keep",
+    label: "Close Sibling",
+    badge: "CLOSE",
+    description:
+      "Biến tấu rất sát ảnh gốc: giữ nguyên bề mặt & chủ thể chính, chỉ đổi nhẹ bố cục và chi tiết phụ",
+    recommendedCategories: [],
   },
   {
     id: "style_only",
-    label: "Chỉ mượn chất liệu · Đổi cảnh",
+    label: "Pure Style DNA",
     badge: "LOOSE",
     description:
-      "Mở khóa bối cảnh: chỉ mượn nét vẽ & bảng màu từ ảnh mẫu để tự do dựng sang cảnh mới",
+      "Tự do nhất: chỉ mượn bút pháp nghệ thuật & bảng màu từ ảnh mẫu để dựng cảnh mới hoàn toàn",
+    recommendedCategories: [],
   },
 ]
+
+export function getRecommendedRefModeForCategory(
+  category: string
+): ReferenceStrengthMode {
+  const low = (category || "").trim().toLowerCase()
+  if (low === "fashions" || low.includes("fashion") || low.includes("outfit")) {
+    return "fashion_vibe"
+  }
+  if (low === "ai prompts" || low === "anime") {
+    return "character_lock"
+  }
+  if (
+    low === "wallpaper" ||
+    low === "posters & visuals" ||
+    low === "photography topics"
+  ) {
+    return "layout_map"
+  }
+  return "balanced"
+}
 
 const UPPER_ACRONYMS = new Set([
   "ai", "seo", "3d", "2d", "4k", "8k", "hd", "ui", "ux", "tv", "diy", "led", "uv", "rgb", "y2k",
@@ -337,6 +430,7 @@ export interface ImageSetJob {
   base_prompt: string
   reference_mode: ReferenceMode
   reference_strength?: ReferenceStrengthMode
+  carrier_override?: CarrierOverrideMode
   run_mode: RunMode
   target_count: number
   batch_size: number
@@ -424,6 +518,7 @@ export interface StudioSettings {
   cdp_recycle_tab_interval?: number
   reference_similarity_check?: boolean
   drop_ref_on_similarity_retry?: boolean
+  reference_mode_profiles?: Record<string, Partial<ReferenceModeProfile>>
   export_root_dir: string
   export_image_format: ExportImageFormat
   max_concurrency: number
@@ -460,6 +555,9 @@ export interface SystemStatusResponse {
   export_image_formats?: ExportImageFormat[]
   filename_styles?: FilenameStyle[]
   reference_strength_modes?: ReferenceStrengthMode[]
+  carrier_override_modes?: CarrierOverrideMode[]
+  reference_profiles?: Record<ReferenceStrengthMode, ReferenceModeProfile>
+  factory_reference_profiles?: Record<ReferenceStrengthMode, ReferenceModeProfile>
   metadata_providers?: MetadataProviderType[]
   metadata_vision_modes?: MetadataVisionMode[]
   picassy_categories?: string[]
@@ -490,6 +588,7 @@ export interface CreateJobPayload {
   preferred_cdp_slot?: number
   reference_mode: ReferenceMode
   reference_strength?: ReferenceStrengthMode
+  carrier_override?: CarrierOverrideMode
   run_mode: RunMode
   target_count: number
   batch_size: number
@@ -509,6 +608,7 @@ export interface CreateJobPayload {
   variation_axes?: JobVariationAxesPool
   reference_ids?: number[]
   auto_start?: boolean
+  replan_unlocked?: boolean
 }
 
 async function apiJson<T>(

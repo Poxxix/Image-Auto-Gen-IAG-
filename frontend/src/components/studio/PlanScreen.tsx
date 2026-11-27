@@ -25,6 +25,7 @@ import {
   Sliders,
   X,
   FileCode,
+  ArrowLeft,
 } from "@phosphor-icons/react"
 import {
   StudioPanel,
@@ -42,12 +43,14 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
+  CARRIER_OVERRIDE_OPTIONS,
   EXPORT_IMAGE_FORMAT_OPTIONS,
   REFERENCE_ADAPTIVE_PRESET_ID,
   REFERENCE_SAFE_AXES_DEFAULTS,
   REFERENCE_STRENGTH_OPTIONS,
   getReferenceImageUrl,
   suggestVariationAxes,
+  type CarrierOverrideMode,
   type CdpSlotStatus,
   type CreateJobPayload,
   type EnabledAxes,
@@ -59,6 +62,7 @@ import {
   type ImageSetJob,
   type MetadataExportMode,
   type ReferenceItem,
+  type ReferenceModeProfile,
   type ReferenceStrengthMode,
   type StudioPreset,
   type StudioTab,
@@ -84,8 +88,10 @@ export interface PlanScreenProps {
   presets?: StudioPreset[]
   picassyCategories?: string[]
   cdpSlots?: CdpSlotStatus[]
+  referenceProfiles?: Record<ReferenceStrengthMode, ReferenceModeProfile>
   allReferences: ReferenceItem[]
   onNavigateTab: (tab: StudioTab) => void
+  onBackToSetup?: (job: ImageSetJob) => void
   onUpdateJob: (jobId: number, updates: Partial<CreateJobPayload>) => Promise<void>
   onDeleteJob: (jobId: number, deleteFiles: boolean) => Promise<void>
   onReplanJob: (jobId: number) => Promise<void>
@@ -123,8 +129,10 @@ export function PlanScreen({
   presets = [],
   picassyCategories = DEFAULT_PLAN_CATEGORIES,
   cdpSlots = [],
+  referenceProfiles,
   allReferences,
   onNavigateTab,
+  onBackToSetup,
   onUpdateJob,
   onDeleteJob,
   onReplanJob,
@@ -159,6 +167,9 @@ export function PlanScreen({
     React.useState<FilenameStyle>("picassy_slug")
   const [referenceStrengthDraft, setReferenceStrengthDraft] =
     React.useState<ReferenceStrengthMode>("balanced")
+  const [carrierOverrideDraft, setCarrierOverrideDraft] =
+    React.useState<CarrierOverrideMode>("auto")
+  const [quickCountDraft, setQuickCountDraft] = React.useState<number>(6)
   const [preferredSlotDraft, setPreferredSlotDraft] = React.useState<number>(0)
   const [basePromptDraft, setBasePromptDraft] = React.useState("")
   const [captionPromptDraft, setCaptionPromptDraft] = React.useState("")
@@ -218,6 +229,10 @@ export function PlanScreen({
     setReferenceStrengthDraft(
       (job.reference_strength as ReferenceStrengthMode) || "balanced"
     )
+    setCarrierOverrideDraft(
+      (job.carrier_override as CarrierOverrideMode) || "auto"
+    )
+    setQuickCountDraft(Number(job.target_count || job.generations.length || 6))
     setPreferredSlotDraft(Number(job.preferred_cdp_slot || 0))
     setBasePromptDraft(job.base_prompt || "")
     setCaptionPromptDraft(job.caption_prompt || "")
@@ -554,6 +569,7 @@ export function PlanScreen({
         category: categoryDraft.trim(),
         filename_style: filenameStyleDraft,
         reference_strength: referenceStrengthDraft,
+        carrier_override: carrierOverrideDraft,
         preferred_cdp_slot: preferredSlotDraft,
         base_prompt: basePromptDraft.trim(),
         caption_prompt: captionPromptDraft.trim(),
@@ -729,6 +745,16 @@ export function PlanScreen({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onBackToSetup && (
+            <StudioButton
+              variant="secondary"
+              onClick={() => onBackToSetup(job)}
+              icon={<ArrowLeft size={14} />}
+              title="Step back to Step 1 with all settings & references loaded to edit this set in-place"
+            >
+              Step 1 setup
+            </StudioButton>
+          )}
           <StudioButton
             variant="secondary"
             loading={replanning}
@@ -762,6 +788,165 @@ export function PlanScreen({
           >
             <Trash size={14} />
           </button>
+        </div>
+      </div>
+
+      {/* Interactive Post-Create Config Audit Strip (Catch & Fix Mistakes in 1 Click) */}
+      <div className="grid grid-cols-2 gap-2.5 rounded-lg border border-[#2E2E2E] bg-[#171717] p-3 sm:grid-cols-3 lg:grid-cols-6">
+        {/* 1. Category */}
+        <div className="flex flex-col gap-1 rounded border border-[#262626] bg-[#1C1C1C] px-2.5 py-2">
+          <span className="text-[10px] font-medium text-[#8A8A8A]">Category</span>
+          <select
+            value={job.category || categoryOptions[0]}
+            onChange={(e) => onUpdateJob(job.id, { category: e.target.value })}
+            className="h-7 rounded border border-[#2E2E2E] bg-[#262626] px-1.5 text-xs font-semibold text-[#F5F5F5] outline-none"
+          >
+            {categoryOptions.map((cat) => (
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* 2. Aspect Ratio */}
+        <div className="flex flex-col gap-1 rounded border border-[#262626] bg-[#1C1C1C] px-2.5 py-2">
+          <span className="text-[10px] font-medium text-[#8A8A8A]">Aspect ratio</span>
+          <select
+            value={job.aspect_ratio || "1:1"}
+            onChange={(e) => onUpdateJob(job.id, { aspect_ratio: e.target.value })}
+            className="h-7 rounded border border-[#2E2E2E] bg-[#262626] px-1.5 font-mono-tech text-xs font-semibold text-[#F5F5F5] outline-none"
+          >
+            {["1:1", "4:5", "9:16", "16:9", "3:2"].map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* 3. Target Count */}
+        <div className="flex flex-col gap-1 rounded border border-[#262626] bg-[#1C1C1C] px-2.5 py-2">
+          <span className="text-[10px] font-medium text-[#8A8A8A]">
+            {job.run_mode === "continuous" ? "Batch / wave" : "Total shots"}
+          </span>
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={quickCountDraft}
+              onChange={(e) =>
+                setQuickCountDraft(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))
+              }
+              className="h-7 w-full rounded border border-[#2E2E2E] bg-[#262626] px-2 font-mono-tech text-xs font-semibold text-[#F5F5F5] outline-none"
+            />
+            {quickCountDraft !== job.target_count && job.run_mode === "fixed" && (
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateJob(job.id, {
+                    target_count: quickCountDraft,
+                    replan_unlocked: true,
+                  })
+                }
+                className="h-7 shrink-0 rounded bg-[#FAFAFA] px-2 text-[11px] font-semibold text-[#121212] cursor-pointer"
+              >
+                Apply
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 4. Reference Intent Mode */}
+        <div className="flex flex-col gap-1 rounded border border-[#262626] bg-[#1C1C1C] px-2.5 py-2">
+          <span className="text-[10px] font-medium text-[#8A8A8A]">
+            {job.reference_mode === "prompt_only"
+              ? "Source mode"
+              : `Ref mode (${job.reference_ids?.length || 0} refs)`}
+          </span>
+          {job.reference_mode === "prompt_only" ? (
+            <button
+              type="button"
+              onClick={() => onBackToSetup && onBackToSetup(job)}
+              className="h-7 rounded border border-[#2E2E2E] bg-[#262626] px-2 text-left text-xs text-[#D4D4D4] hover:text-[#FAFAFA] cursor-pointer truncate"
+            >
+              Pure prompt · Add refs…
+            </button>
+          ) : (
+            <select
+              value={job.reference_strength || "balanced"}
+              onChange={(e) =>
+                onUpdateJob(job.id, {
+                  reference_strength: e.target.value as ReferenceStrengthMode,
+                })
+              }
+              className="h-7 rounded border border-[#2E2E2E] bg-[#262626] px-1.5 text-xs font-semibold text-[#F5F5F5] outline-none"
+            >
+              {REFERENCE_STRENGTH_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {referenceProfiles?.[opt.id]?.label || opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* 5. Surface Carrier Override */}
+        <div className="flex flex-col gap-1 rounded border border-[#262626] bg-[#1C1C1C] px-2.5 py-2">
+          <span className="text-[10px] font-medium text-[#8A8A8A]">Surface carrier</span>
+          {job.reference_mode === "prompt_only" ? (
+            <span className="inline-flex h-7 items-center text-xs text-[#737373]">
+              Preset: {job.preset_id || "auto"}
+            </span>
+          ) : (
+            <select
+              value={job.carrier_override || "auto"}
+              onChange={(e) =>
+                onUpdateJob(job.id, {
+                  carrier_override: e.target.value as CarrierOverrideMode,
+                })
+              }
+              className="h-7 rounded border border-[#2E2E2E] bg-[#262626] px-1.5 text-xs font-semibold text-[#F5F5F5] outline-none"
+            >
+              {CARRIER_OVERRIDE_OPTIONS.map((co) => (
+                <option key={co.id} value={co.id}>
+                  {co.shortLabel}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* 6. Chrome Slot & Format */}
+        <div className="flex flex-col gap-1 rounded border border-[#262626] bg-[#1C1C1C] px-2.5 py-2">
+          <span className="text-[10px] font-medium text-[#8A8A8A]">
+            Chrome slot · {(job.export_image_format || "original").toUpperCase()}
+          </span>
+          <select
+            value={String(job.preferred_cdp_slot || 0)}
+            onChange={(e) =>
+              onUpdateJob(job.id, {
+                preferred_cdp_slot: Number(e.target.value) || 0,
+              })
+            }
+            className="h-7 rounded border border-[#2E2E2E] bg-[#262626] px-1.5 text-xs font-semibold text-[#F5F5F5] outline-none"
+          >
+            <option value="0">Auto slot</option>
+            {(cdpSlots.length > 0
+              ? cdpSlots
+              : [
+                  { slot_id: 1, port: 9222 },
+                  { slot_id: 2, port: 9223 },
+                  { slot_id: 3, port: 9224 },
+                  { slot_id: 4, port: 9225 },
+                ]
+            ).map((s) => (
+              <option key={s.slot_id} value={String(s.slot_id)}>
+                Slot #{s.slot_id} (:{s.port})
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -885,13 +1070,15 @@ export function PlanScreen({
             </div>
 
             {job.reference_mode !== "prompt_only" && (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-3">
                 <span className="text-xs font-medium text-[#F5F5F5]">
-                  Độ bám ảnh mẫu (Reference variation mode)
+                  Chế độ bám ảnh mẫu &amp; bề mặt thể hiện
                 </span>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {REFERENCE_STRENGTH_OPTIONS.map((opt) => {
                     const active = referenceStrengthDraft === opt.id
+                    const lbl = referenceProfiles?.[opt.id]?.label || opt.label
+                    const dsc = referenceProfiles?.[opt.id]?.description || opt.description
                     return (
                       <button
                         key={opt.id}
@@ -905,11 +1092,32 @@ export function PlanScreen({
                         )}
                       >
                         <span className="text-xs font-semibold text-[#F5F5F5]">
-                          {opt.label}
+                          {lbl}
                         </span>
                         <span className="text-[11px] text-[#A3A3A3]">
-                          {opt.description}
+                          {dsc}
                         </span>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {CARRIER_OVERRIDE_OPTIONS.map((co) => {
+                    const activeCo = carrierOverrideDraft === co.id
+                    return (
+                      <button
+                        key={co.id}
+                        type="button"
+                        onClick={() => setCarrierOverrideDraft(co.id)}
+                        className={cn(
+                          "rounded border px-2.5 py-1.5 text-left text-xs font-medium cursor-pointer",
+                          activeCo
+                            ? "border-[#FAFAFA] bg-[#FAFAFA] text-[#121212] font-semibold"
+                            : "border-[#2E2E2E] bg-[#171717] text-[#A3A3A3]"
+                        )}
+                      >
+                        {co.label}
                       </button>
                     )
                   })}

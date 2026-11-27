@@ -175,12 +175,11 @@ def measure_image_similarity(
     )
 
     mode = str(reference_strength or "balanced").strip().lower()
-    if mode == "subject_keep":
+    if mode in ("subject_keep", "character_lock"):
         d_lim, core_diff_lim, core_corr_lim, edge_cos_lim = 3, 0.10, 0.96, 0.78
-    elif mode == "style_only":
+    elif mode in ("style_only", "layout_map"):
         d_lim, core_diff_lim, core_corr_lim, edge_cos_lim = 7, 0.18, 0.89, 0.60
     else:
-        mode = "balanced"
         d_lim, core_diff_lim, core_corr_lim, edge_cos_lim = 5, 0.14, 0.93, 0.68
 
     if dhash_max is not None:
