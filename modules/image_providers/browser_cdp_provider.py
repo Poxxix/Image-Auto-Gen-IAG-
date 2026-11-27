@@ -19,6 +19,7 @@ from config import (
     AI_ENGINES,
     CDP_HOST,
     CDP_PORT,
+    DATA_DIR,
     DEFAULT_CDP_SLOTS,
     get_chrome_executable_path,
     get_slot_profile_dir,
@@ -275,6 +276,126 @@ def _kill_port_process(cdp_port: int = CDP_PORT) -> None:
         pass
 
 
+def _get_cdp_download_quarantine_dir() -> Path:
+    qdir = DATA_DIR / ".cdp_downloads_tmp"
+    qdir.mkdir(parents=True, exist_ok=True)
+    return qdir
+
+
+def _ensure_profile_download_quarantine_prefs(profile_dir: Path) -> None:
+    """
+    Ensures dedicated AI Chrome slot profiles default downloads into `data/.cdp_downloads_tmp`
+    instead of the operator's OS `~/Downloads` folder.
+    """
+    try:
+        import json
+
+        qdir_str = str(_get_cdp_download_quarantine_dir().resolve())
+        default_dir = profile_dir / "Default"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        pref_path = default_dir / "Preferences"
+        prefs: Dict[str, Any] = {}
+        if pref_path.exists():
+            try:
+                prefs = json.loads(pref_path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                prefs = {}
+        dl_cfg = prefs.get("download")
+        if not isinstance(dl_cfg, dict):
+            dl_cfg = {}
+        changed = False
+        if dl_cfg.get("default_directory") != qdir_str:
+            dl_cfg["default_directory"] = qdir_str
+            changed = True
+        if dl_cfg.get("prompt_for_download") is not False:
+            dl_cfg["prompt_for_download"] = False
+            changed = True
+        if dl_cfg.get("directory_upgrade") is not True:
+            dl_cfg["directory_upgrade"] = True
+            changed = True
+        if changed:
+            prefs["download"] = dl_cfg
+            sf_cfg = prefs.get("savefile")
+            if not isinstance(sf_cfg, dict):
+                sf_cfg = {}
+            sf_cfg["default_directory"] = qdir_str
+            prefs["savefile"] = sf_cfg
+            pref_path.write_text(json.dumps(prefs, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Could not preconfigure Chrome slot download prefs: %s", exc)
+
+
+def _configure_cdp_download_quarantine(browser: Any, context: Any, page: Any) -> None:
+    """
+    Redirects all Chromium downloads at runtime via CDP `Browser.setDownloadBehavior`
+    into `data/.cdp_downloads_tmp` so delayed Gemini downloads can NEVER leak into `~/Downloads`.
+    """
+    qdir_str = str(_get_cdp_download_quarantine_dir().resolve())
+    try:
+        b_sess = browser.new_browser_cdp_session()
+        try:
+            b_sess.send(
+                "Browser.setDownloadBehavior",
+                {
+                    "behavior": "allowAndName",
+                    "downloadPath": qdir_str,
+                    "eventsEnabled": True,
+                },
+            )
+        finally:
+            try:
+                b_sess.detach()
+            except Exception:
+                pass
+        return
+    except Exception:
+        pass
+
+    try:
+        p_sess = context.new_cdp_session(page)
+        try:
+            p_sess.send(
+                "Browser.setDownloadBehavior",
+                {
+                    "behavior": "allowAndName",
+                    "downloadPath": qdir_str,
+                    "eventsEnabled": True,
+                },
+            )
+        except Exception:
+            p_sess.send(
+                "Page.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": qdir_str,
+                },
+            )
+        finally:
+            try:
+                p_sess.detach()
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.debug("CDP setDownloadBehavior note: %s", exc)
+
+
+def _purge_cdp_download_quarantine(max_age_sec: float = 0.0) -> None:
+    """Sweeps temporary files inside `data/.cdp_downloads_tmp`."""
+    try:
+        qdir = _get_cdp_download_quarantine_dir()
+        now = time.time()
+        for item in list(qdir.iterdir()):
+            if not item.is_file():
+                continue
+            try:
+                if max_age_sec <= 0.0 or (now - item.stat().st_mtime) >= max_age_sec:
+                    item.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _kill_port_9222_process() -> None:
     _kill_port_process(CDP_PORT)
 
@@ -313,6 +434,7 @@ def launch_chrome_slot(
 
     chrome_bin = get_chrome_executable_path()
     prof.mkdir(parents=True, exist_ok=True)
+    _ensure_profile_download_quarantine_prefs(prof)
 
     for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         lock_file = prof / lock_name
@@ -1270,8 +1392,9 @@ def _validate_candidate_bytes(
 
 def normalize_gemini_asset_url(url: str) -> str:
     """
-    Rewrites Google Gemini `googleusercontent.com` preview URLs (e.g. `=s1024-rj`
-    or `=w825-h1024`) to `=s0` so the CDN serves the full-resolution master asset.
+    Rewrites Google Gemini `googleusercontent.com` preview URLs (e.g. `=s1024-rj`,
+    `=w825-h1024`, or `=d`) to clean inline `=s0` so the CDN serves the full-resolution
+    master asset in memory WITHOUT `Content-Disposition: attachment` (`-d`).
     """
     if not url or not isinstance(url, str):
         return url
@@ -1286,22 +1409,15 @@ def normalize_gemini_asset_url(url: str) -> str:
             first_seg == "gg"
             or first_seg.startswith("gg-")
             or first_seg.startswith("rd-")
+            or first_seg.startswith("aida")
+            or first_seg.startswith("pw")
         ):
             return url
 
-        if re.search(r"=w\d+-h\d+([^/]*)$", path, flags=re.IGNORECASE):
-            new_path = re.sub(r"=w\d+-h\d+([^/]*)$", r"=s0\1", path, flags=re.IGNORECASE)
-        elif re.search(r"=(?:d|d-I)$", path, flags=re.IGNORECASE):
-            new_path = re.sub(
-                r"=(d|d-I)$",
-                lambda m: f"=s0-{m.group(1)}",
-                path,
-                flags=re.IGNORECASE,
-            )
-        elif re.search(r"=(?:s|w|h)\d+([^/]*)$", path, flags=re.IGNORECASE):
-            new_path = re.sub(
-                r"=(?:s|w|h)\d+([^/]*)$", r"=s0\1", path, flags=re.IGNORECASE
-            )
+        # Strip any size/crop/download suffix after the final `=` and force pure inline `=s0`
+        if "=" in path.rsplit("/", 1)[-1]:
+            base_path = path.rsplit("=", 1)[0]
+            new_path = f"{base_path}=s0"
         else:
             new_path = f"{path}=s0"
 
@@ -1314,11 +1430,11 @@ def _build_full_res_googleusercontent_urls(src: str) -> List[str]:
     norm = normalize_gemini_asset_url(src)
     if not norm or norm == src:
         return []
-    candidates = [norm]
-    # Also include pure `=s0` without `-rj` suffix if present
     clean_s0 = re.sub(r"=s0-[^/?#]+", "=s0", norm)
-    if clean_s0 != norm and clean_s0 != src:
-        candidates.insert(0, clean_s0)
+    candidates: List[str] = []
+    for cand in (clean_s0, norm):
+        if cand and cand != src and cand not in candidates:
+            candidates.append(cand)
     return candidates
 
 
@@ -1327,10 +1443,10 @@ def _inpage_fetch_bytes(page: Any, target_url: str) -> Optional[bytes]:
         b64_data = page.evaluate(
             """async (targetUrl) => {
                 const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(), 6000);
-                try {
+                const timer = setTimeout(() => ctrl.abort(), 6500);
+                const tryFetch = async (credMode) => {
                     const res = await fetch(targetUrl, {
-                        credentials: 'include',
+                        credentials: credMode,
                         signal: ctrl.signal
                     });
                     if (!res.ok) return null;
@@ -1343,6 +1459,13 @@ def _inpage_fetch_bytes(page: Any, target_url: str) -> Optional[bytes]:
                         binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
                     }
                     return btoa(binary);
+                };
+                try {
+                    const isSameOrigin = targetUrl.startsWith('blob:') || targetUrl.startsWith(window.location.origin);
+                    if (isSameOrigin) {
+                        return (await tryFetch('same-origin')) || (await tryFetch('omit'));
+                    }
+                    return (await tryFetch('omit')) || (await tryFetch('include'));
                 } catch (e) {
                     return null;
                 } finally {
@@ -1513,41 +1636,7 @@ def _extract_raw_bytes_via_cdp(
                     )
                 return checked
 
-    # 4. Try native download button before opening extra tabs
-    try:
-        dl_selectors = [
-            'single-image button:has(mat-icon[fonticon="download"])',
-            'generated-image button:has(mat-icon[fonticon="download"])',
-            'generated-image button[data-test-id="download-generated-image-button"]',
-            'single-image button[data-test-id="download-generated-image-button"]',
-        ]
-        for d_sel in dl_selectors:
-            btns = page.query_selector_all(d_sel)
-            if btns and btns[-1].is_visible():
-                tmp_dl = tempfile.NamedTemporaryFile(prefix="_studio_dl_", suffix=".bin", delete=False)
-                tmp_file = Path(tmp_dl.name)
-                tmp_dl.close()
-                try:
-                    with page.expect_download(timeout=12000) as dl_info:
-                        btns[-1].click()
-                    dl_info.value.save_as(str(tmp_file))
-                    raw_dl = tmp_file.read_bytes()
-                finally:
-                    tmp_file.unlink(missing_ok=True)
-                checked = _check(raw_dl)
-                if checked:
-                    if log_fn:
-                        log_fn(
-                            f"Extracted original {checked['format']} image ({len(raw_dl) // 1024} KB, "
-                            f"{checked['width']}x{checked['height']}) via native download."
-                        )
-                    return checked
-    except ReferenceTooSimilarError:
-        raise
-    except Exception:
-        pass
-
-    # 5. Last resort: same-context download tab (without calling bring_to_front to avoid focus stealing)
+    # 4. Inline browser context navigation (pure `=s0` inline URLs — never triggers OS Downloads)
     if src.startswith("blob:") or src.startswith("http"):
         dl_page = None
         try:
@@ -1579,6 +1668,52 @@ def _extract_raw_bytes_via_cdp(
                     dl_page.close()
                 except Exception:
                     pass
+
+    # 5. Last resort: native download button isolated inside CDP quarantine folder (`data/.cdp_downloads_tmp`)
+    try:
+        dl_selectors = [
+            'single-image button:has(mat-icon[fonticon="download"])',
+            'generated-image button:has(mat-icon[fonticon="download"])',
+            'generated-image button[data-test-id="download-generated-image-button"]',
+            'single-image button[data-test-id="download-generated-image-button"]',
+        ]
+        for d_sel in dl_selectors:
+            btns = page.query_selector_all(d_sel)
+            if btns and btns[-1].is_visible():
+                qdir = _get_cdp_download_quarantine_dir()
+                tmp_dl = tempfile.NamedTemporaryFile(
+                    prefix="_studio_dl_", suffix=".bin", dir=str(qdir), delete=False
+                )
+                tmp_file = Path(tmp_dl.name)
+                tmp_dl.close()
+                dl_obj = None
+                try:
+                    with page.expect_download(timeout=22000) as dl_info:
+                        btns[-1].click()
+                    dl_obj = dl_info.value
+                    dl_obj.save_as(str(tmp_file))
+                    raw_dl = tmp_file.read_bytes()
+                finally:
+                    tmp_file.unlink(missing_ok=True)
+                    if dl_obj is not None:
+                        try:
+                            dl_obj.delete()
+                        except Exception:
+                            pass
+                    _purge_cdp_download_quarantine()
+                checked = _check(raw_dl)
+                if checked:
+                    if log_fn:
+                        log_fn(
+                            f"Extracted original {checked['format']} image ({len(raw_dl) // 1024} KB, "
+                            f"{checked['width']}x{checked['height']}) via native download."
+                        )
+                    return checked
+                break
+    except ReferenceTooSimilarError:
+        raise
+    except Exception:
+        _purge_cdp_download_quarantine()
 
     return None
 
@@ -2045,6 +2180,8 @@ def generate_image_via_cdp(
         if recycle_tab:
             _log(f"Recycling {engine.capitalize()} browser tab on Slot #{slot_id} to keep Chrome memory lean...")
         page = _find_or_open_engine_page(context, engine, recycle=recycle_tab)
+        _configure_cdp_download_quarantine(browser, context, page)
+        _purge_cdp_download_quarantine(max_age_sec=30.0)
         _hb()
         try:
             page.set_default_timeout(15000)
@@ -2290,3 +2427,4 @@ def generate_image_via_cdp(
             tracker.detach(page)
             tracker.response_objects.clear()
             tracker.response_cache.clear()
+            _purge_cdp_download_quarantine()

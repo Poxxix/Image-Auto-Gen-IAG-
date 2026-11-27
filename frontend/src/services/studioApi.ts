@@ -963,6 +963,39 @@ export function getGenerationImageUrl(
   return `/api/generations/${genId}/image${qs ? `?${qs}` : ""}`
 }
 
+export interface EditGenerationImagePayload {
+  operation: "inpaint" | "force_star" | "trim" | "commit_base64"
+  source_base64?: string
+  mask_base64?: string
+  boxes?: Array<{ x: number; y: number; w: number; h: number }>
+  trim_percent?: number
+  trim_anchor?: "bottom_right" | "center"
+  save_to_disk?: boolean
+}
+
+export interface EditGenerationImageResponse {
+  saved: boolean
+  preview_data_url?: string
+  width?: number
+  height?: number
+  generation?: GenerationItem
+  job?: ImageSetJob
+}
+
+export async function editGenerationImage(
+  genId: number,
+  payload: EditGenerationImagePayload
+): Promise<EditGenerationImageResponse> {
+  return apiJson<EditGenerationImageResponse>(
+    `/api/generations/${genId}/edit-image`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    45000
+  )
+}
+
 export function getReferenceImageUrl(refId: number): string {
   return `/api/references/${refId}/image`
 }

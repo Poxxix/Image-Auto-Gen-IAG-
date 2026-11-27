@@ -12,9 +12,12 @@ import {
   MagnifyingGlass,
   FloppyDisk,
   PencilSimple,
+  CornersOut,
+  Eraser,
   Star,
   X,
 } from "@phosphor-icons/react"
+import { ReviewDeckModal } from "@/components/studio/ReviewDeckModal"
 import {
   StudioPanel,
   StudioButton,
@@ -72,6 +75,7 @@ export interface GalleryScreenProps {
   onOpenFolder: (jobId: number) => Promise<void>
   onChangeJobFolder: (jobId: number) => Promise<void>
   onDeleteJob: (jobId: number, deleteFiles: boolean) => Promise<void>
+  onJobSynced?: (job: ImageSetJob) => void
 }
 
 const DEFAULT_GALLERY_CATEGORIES = [
@@ -104,8 +108,11 @@ export function GalleryScreen({
   onOpenFolder,
   onChangeJobFolder,
   onDeleteJob,
+  onJobSynced,
 }: GalleryScreenProps) {
   const [selectedGen, setSelectedGen] = React.useState<GenerationItem | null>(null)
+  const [reviewDeckOpen, setReviewDeckOpen] = React.useState(false)
+  const [reviewStartGenId, setReviewStartGenId] = React.useState<number | null>(null)
   const [modalTab, setModalTab] = React.useState<"details" | "csv">("details")
   const [filterStatus, setFilterStatus] = React.useState<
     "all" | "completed" | "peak" | "metadata_pending" | "duplicates"
@@ -408,6 +415,21 @@ export function GalleryScreen({
               title="Scan folder for files deleted in Finder, re-sequence -1..N, and rewrite pin-import.csv"
             >
               Sync folder &amp; CSV
+            </StudioButton>
+          )}
+
+          {currentJob.generations.some((g) => Boolean(g.image_file)) && (
+            <StudioButton
+              variant="primary"
+              onClick={() => {
+                const firstSaved = filteredGenerations.find((g) => Boolean(g.image_file))
+                setReviewStartGenId(firstSaved ? firstSaved.id : null)
+                setReviewDeckOpen(true)
+              }}
+              icon={<CornersOut size={14} weight="bold" />}
+              title="Open full-size continuous Review Deck to swipe through images & erase remaining logos in-place"
+            >
+              Review deck
             </StudioButton>
           )}
 
@@ -792,27 +814,58 @@ export function GalleryScreen({
                   </div>
 
                   {/* Neutral #121212 Image Frame */}
-                  <div className="mt-2.5 relative aspect-[4/3] w-full overflow-hidden rounded-md border border-[#2E2E2E] bg-[#121212]">
+                  <div className="group mt-2.5 relative aspect-[4/3] w-full overflow-hidden rounded-md border border-[#2E2E2E] bg-[#121212]">
                     {hasImage ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedGen(gen)
-                          setModalTab("details")
-                        }}
-                        className="block h-full w-full cursor-pointer"
-                      >
-                        <img
-                          src={getGenerationImageUrl(
-                            gen.id,
-                            gen.md5 || gen.image_file
-                          )}
-                          alt={gen.title || gen.prompt_final}
-                          loading="lazy"
-                          decoding="async"
-                          className="h-full w-full object-cover"
-                        />
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReviewStartGenId(gen.id)
+                            setReviewDeckOpen(true)
+                          }}
+                          className="block h-full w-full cursor-pointer"
+                          title="Open in full-size Review Deck (erase logo / swipe review)"
+                        >
+                          <img
+                            src={getGenerationImageUrl(
+                              gen.id,
+                              gen.md5 || gen.updated_at || gen.image_file
+                            )}
+                            alt={gen.title || gen.prompt_final}
+                            loading="lazy"
+                            decoding="async"
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                        <div className="pointer-events-none absolute right-2 bottom-2 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSelectedGen(gen)
+                              setModalTab("details")
+                            }}
+                            className="pointer-events-auto inline-flex items-center gap-1 rounded border border-[#383838] bg-[#171717]/90 px-2 py-1 text-[10px] font-medium text-[#F5F5F5] hover:bg-[#262626] cursor-pointer"
+                            title="Inspect prompt & details"
+                          >
+                            <PencilSimple size={11} />
+                            Prompt
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setReviewStartGenId(gen.id)
+                              setReviewDeckOpen(true)
+                            }}
+                            className="pointer-events-auto inline-flex items-center gap-1 rounded bg-[#FAFAFA] px-2 py-1 text-[10px] font-semibold text-[#121212] cursor-pointer"
+                            title="Full-size review & erase watermark"
+                          >
+                            <Eraser size={11} weight="bold" />
+                            Full review
+                          </button>
+                        </div>
+                      </>
                     ) : (
                       <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-[#737373]">
                         <Sparkle size={18} />
@@ -1019,7 +1072,7 @@ export function GalleryScreen({
                       <a
                         href={getGenerationImageUrl(
                           gen.id,
-                          gen.updated_at,
+                          gen.md5 || gen.updated_at,
                           true
                         )}
                         download={gen.image_file}
@@ -1250,7 +1303,7 @@ export function GalleryScreen({
                         <a
                           href={getGenerationImageUrl(
                             selectedGen.id,
-                            selectedGen.updated_at,
+                            selectedGen.md5 || selectedGen.updated_at,
                             true
                           )}
                           download={selectedGen.image_file}
@@ -1296,6 +1349,17 @@ export function GalleryScreen({
           )}
         </DialogContent>
       </Dialog>
+
+      <ReviewDeckModal
+        open={reviewDeckOpen}
+        items={filteredGenerations.filter((g) => Boolean(g.image_file))}
+        initialGenId={reviewStartGenId}
+        jobTitle={currentJob.theme}
+        onClose={() => setReviewDeckOpen(false)}
+        onTogglePeak={handleTogglePeak}
+        onDeleteGeneration={onDeleteGeneration}
+        onJobSynced={onJobSynced}
+      />
     </div>
   )
 }

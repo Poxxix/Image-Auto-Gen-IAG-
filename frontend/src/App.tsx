@@ -920,6 +920,7 @@ export function App() {
             await handlePickExportFolder(jid)
           }}
           onDeleteJob={handleDeleteJob}
+          onJobSynced={(updatedJob) => updateJobInState(updatedJob)}
         />
       )}
 

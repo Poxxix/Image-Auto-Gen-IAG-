@@ -69,7 +69,15 @@ from modules.reference_sources import (
     discover_pinterest_references,
     save_uploaded_reference,
 )
-from modules.watermark_remover import remove_watermarks_for_job
+from modules.reference_sources.image_utils import inspect_image_bytes
+from modules.watermark_remover import (
+    inpaint_image_bytes,
+    remove_gemini_watermark_bytes,
+    remove_watermark_for_generation,
+    remove_watermarks_for_job,
+    replace_generation_image_on_disk,
+    trim_image_edges_bytes,
+)
 
 
 @asynccontextmanager
@@ -247,6 +255,16 @@ class SamplePromptRequest(BaseModel):
 
 class ImportAxesRequest(BaseModel):
     raw_text: str
+
+
+class EditGenerationImageRequest(BaseModel):
+    operation: str = "inpaint"                   # inpaint | force_star | trim | commit_base64
+    source_base64: Optional[str] = None          # Optional working image dataURL/base64 for chained edits
+    mask_base64: Optional[str] = None            # PNG mask dataURL/base64 for freehand brush
+    boxes: Optional[List[Dict[str, float]]] = None  # Normalized [0..1] {x, y, w, h}
+    trim_percent: float = Field(default=3.0, ge=0.5, le=15.0)
+    trim_anchor: str = "bottom_right"            # bottom_right | center
+    save_to_disk: bool = False                   # False = return preview base64; True = overwrite export file atomically
 
 
 def _build_enriched_cdp_slots(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1234,6 +1252,88 @@ def api_retry_metadata(gen_id: int, req: RetryMetadataRequest) -> Dict[str, Any]
         "generation": gen,
         "job": db.get_job(gen["job_id"]),
     }
+
+
+def _decode_data_url_or_b64(raw_val: str) -> bytes:
+    import base64
+
+    clean = raw_val.strip()
+    if "," in clean and clean.lower().startswith("data:"):
+        clean = clean.split(",", 1)[1]
+    return base64.b64decode(clean)
+
+
+@app.post("/api/generations/{gen_id}/edit-image")
+def api_edit_generation_image(
+    gen_id: int,
+    req: EditGenerationImageRequest,
+) -> Dict[str, Any]:
+    import base64
+
+    gen = db.get_generation(gen_id)
+    if not gen or not gen.get("image_path"):
+        raise HTTPException(status_code=404, detail=f"Generated image #{gen_id} not found.")
+    img_path = Path(gen["image_path"])
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="Image file missing on disk.")
+
+    try:
+        working_bytes = (
+            _decode_data_url_or_b64(req.source_base64)
+            if req.source_base64
+            else img_path.read_bytes()
+        )
+        op = (req.operation or "inpaint").strip().lower()
+
+        if op == "force_star":
+            res = remove_gemini_watermark_bytes(working_bytes, force=True)
+            out_bytes = res["raw_bytes"]
+            label = "Force-cleaned Gemini star watermark"
+        elif op == "trim":
+            out_bytes = trim_image_edges_bytes(
+                working_bytes,
+                trim_percent=req.trim_percent,
+                anchor=req.trim_anchor,
+            )
+            label = f"Trimmed {req.trim_percent:.1f}% ({req.trim_anchor})"
+        elif op == "commit_base64":
+            out_bytes = working_bytes
+            label = "Saved edited image in Review Deck"
+        else:
+            mask_bytes = _decode_data_url_or_b64(req.mask_base64) if req.mask_base64 else None
+            out_bytes = inpaint_image_bytes(
+                working_bytes,
+                mask_png_bytes=mask_bytes,
+                boxes=req.boxes,
+            )
+            label = "Removed logo/watermark via Inpaint"
+
+        if req.save_to_disk:
+            saved = replace_generation_image_on_disk(
+                gen_id,
+                out_bytes,
+                action_label=label,
+            )
+            if not saved:
+                raise HTTPException(status_code=404, detail="Generation not found.")
+            return {
+                "saved": True,
+                "generation": saved["generation"],
+                "job": saved["job"],
+            }
+
+        info = inspect_image_bytes(out_bytes)
+        b64_str = base64.b64encode(out_bytes).decode("ascii")
+        return {
+            "saved": False,
+            "preview_data_url": f"data:{info['mime_type']};base64,{b64_str}",
+            "width": info["width"],
+            "height": info["height"],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Image edit failed: {exc}")
 
 
 # =============================================================================

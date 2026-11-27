@@ -185,6 +185,7 @@ function directionalContourPolish(imageData, pos, alphaMap) {
 }
 
 function main() {
+    const forceMode = process.argv.includes('--force');
     const input = fs.readFileSync(0);
     if (input.length < 8) {
         process.exit(2);
@@ -210,7 +211,25 @@ function main() {
     const meta = res.meta || {};
     const origSpatial = meta.detection?.originalSpatialScore ?? 0;
     const origGrad = meta.detection?.originalGradientScore ?? 0;
-    const pos = meta.position;
+    let pos = meta.position;
+    if (forceMode && (!pos || !pos.width)) {
+        let fSize = 96;
+        let fMargin = 64;
+        if (width <= 1024 || height <= 1024) {
+            const scale = Math.min(width, height) / 1024;
+            fSize = Math.max(24, Math.round(48 * scale));
+            fMargin = Math.max(16, Math.round(32 * scale));
+        }
+        if (width > fSize + fMargin && height > fSize + fMargin) {
+            pos = {
+                x: width - fMargin - fSize,
+                y: height - fMargin - fSize,
+                width: fSize,
+                height: fSize
+            };
+        }
+    }
+
     const marginRight = pos ? width - (pos.x + pos.width) : 0;
     const marginBottom = pos ? height - (pos.y + pos.height) : 0;
     const isAdaptiveSource =
@@ -219,13 +238,14 @@ function main() {
     const minSpatial = isAdaptiveSource ? 0.38 : 0.32;
 
     if (
-        !meta.applied ||
-        !pos ||
-        marginRight < 16 ||
-        marginBottom < 16 ||
-        origSpatial < minSpatial ||
-        origGrad < minGrad ||
-        origSpatial + origGrad < 0.68
+        !forceMode &&
+        (!meta.applied ||
+            !pos ||
+            marginRight < 16 ||
+            marginBottom < 16 ||
+            origSpatial < minSpatial ||
+            origGrad < minGrad ||
+            origSpatial + origGrad < 0.68)
     ) {
         process.stderr.write(
             JSON.stringify({
@@ -241,20 +261,30 @@ function main() {
         return;
     }
 
-    const rawGain = Number.isFinite(meta.alphaGain) ? meta.alphaGain : 0.6;
-    const baseGain = rawGain > 1.05 ? 0.6 : Math.max(0.45, rawGain);
+    if (!pos) {
+        process.stderr.write(
+            JSON.stringify({ applied: false, skipReason: 'image-too-small' })
+        );
+        process.stdout.write(Buffer.from(orig.buffer, orig.byteOffset, orig.byteLength));
+        return;
+    }
+
+    const rawGain = Number.isFinite(meta.alphaGain) ? meta.alphaGain : 0.55;
+    const baseGain = rawGain > 1.05 ? 0.55 : Math.max(0.35, rawGain);
     const isNativeSize = pos.width === 48 || pos.width === 96;
 
-    // For downscaled preview sizes (e.g. 36px on 572x1024 or 43px on 825x1024)
-    // or when residual edge gradient remains, run subpixel alignment + isophote contour polish
-    if (!isNativeSize || (meta.passCount && meta.passCount > 1)) {
+    // For forced mode, downscaled preview sizes, or multi-pass cases, optimize gain + subpixel alignment + polish
+    if (forceMode || !isNativeSize || (meta.passCount && meta.passCount > 1)) {
         const alpha96 = getEmbeddedAlphaMap(96);
         let bestScore = Infinity;
         let bestParams = { dx: 0, dy: 0, scale: 1, gain: baseGain };
         let bestAlpha = null;
+        const gainCandidates = forceMode
+            ? [0.22, 0.34, 0.46, 0.56, 0.66]
+            : [Math.max(0.2, baseGain - 0.02), baseGain, baseGain + 0.02];
 
-        for (let dy = -1.0; dy <= 1.0; dy += 0.25) {
-            for (let dx = -1.0; dx <= 1.0; dx += 0.25) {
+        for (let dy = -1.0; dy <= 1.0; dy += 0.5) {
+            for (let dx = -1.0; dx <= 1.0; dx += 0.5) {
                 for (const scale of [0.97, 1.0, 1.03]) {
                     const candAlpha = sampleAlphaSubpixel(
                         alpha96,
@@ -263,8 +293,7 @@ function main() {
                         dy,
                         scale
                     );
-                    for (const gDelta of [-0.02, 0, 0.02]) {
-                        const gain = Math.max(0.2, baseGain + gDelta);
+                    for (const gain of gainCandidates) {
                         const tmp = {
                             width,
                             height,
